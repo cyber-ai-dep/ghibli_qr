@@ -496,6 +496,9 @@ wheels = [
 name = "ghibli-qr"
 version = "0.1.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "python-dotenv" },
+]
 
 [package.dev-dependencies]
 black = [
@@ -504,6 +507,7 @@ black = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "python-dotenv", specifier = ">=1.2.1" }]
 
 [package.metadata.requires-dev]
 black = [
