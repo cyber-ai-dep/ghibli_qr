@@ -1,0 +1,55 @@
+#!/bin/sh
+#
+# prepare-commit-msg hook for gipt integration
+# Automatically generates AI-powered commit messages using gipt
+#
+# To install:
+#   cp prepare-commit-msg .git/hooks/prepare-commit-msg
+#   chmod +x .git/hooks/prepare-commit-msg
+
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+SHA1=$3
+
+# Only run for regular commits (not merge, squash, amend with message, etc.)
+case "$COMMIT_SOURCE" in
+  message|template|squash|merge)
+    exit 0
+    ;;
+  commit)
+    ;;
+  *)
+    ;;
+esac
+
+# Check if gipt is available
+if ! command -v gipt >/dev/null 2>&1; then
+    echo "Warning: gipt not found in PATH. Skipping AI commit message generation." >&2
+    exit 0
+fi
+
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    exit 0
+fi
+
+if git diff --cached --quiet 2>/dev/null; then
+    echo "No staged changes. Skipping gipt." >&2
+    exit 0
+fi
+
+
+if gipt commit --dry-run | tee "$COMMIT_MSG_FILE"; then
+    if [ -s "$COMMIT_MSG_FILE" ]; then
+        {
+            echo ""
+            echo "# AI-generated commit message by gipt"
+            echo "# Edit above lines to modify the message"
+        } >> "$COMMIT_MSG_FILE"
+    else
+        echo "Warning: gipt produced no output. Using default Git behavior." >&2
+    fi
+else
+        echo "gipt failed to generate a commit message. Using default Git behavior." >&2
+fi
+
+exit 0
