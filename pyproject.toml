@@ -1,0 +1,13 @@
+[project]
+name = "ghibli-qr"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+black = [
+    "gipt>=0.1.2",
+    "isort>=7.0.0",
+]
