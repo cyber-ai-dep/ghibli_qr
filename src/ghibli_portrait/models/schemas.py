@@ -3,7 +3,7 @@ from typing import List
 from pydantic import Field, BaseModel
 
 
-ImageURLs = List[str]
+ImgURLs = List[str]
 
 
 class Quality(str, Enum):
@@ -23,7 +23,7 @@ class AspectRatio(str, Enum):
 
 
 class Image2GhibliRequest(BaseModel):
-    img_urls: ImageURLs = Field(
+    img_urls: ImgURLs = Field(
         ...,
         min_length=1,
         examples=[

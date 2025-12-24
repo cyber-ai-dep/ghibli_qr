@@ -1,15 +1,11 @@
-from typing import List
-
 import requests
 
 from src.ghibli_portrait.config import Settings
-from src.ghibli_portrait.models.schemas import AspectRatio, Quality
-
-imgURLs = List[str]
+from src.ghibli_portrait.models.schemas import AspectRatio, Quality, ImgURLs
 
 
 def get_ghibli(
-    imgs: imgURLs,
+    img_urls: ImgURLs,
     aspect_ratio: AspectRatio = AspectRatio._1_1,
     quality: Quality = Quality.BASIC,
 ) -> dict:
@@ -24,7 +20,7 @@ def get_ghibli(
         "callBackUrl": s.CALL_BACK,
         "input": {
             "prompt": "Convert this image to Ghibli style art.",
-            "image_urls": imgs,
+            "image_urls": img_urls,
             "aspect_ratio": aspect_ratio,
             "quality": quality,
         },
