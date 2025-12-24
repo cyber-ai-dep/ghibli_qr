@@ -26,7 +26,6 @@ async def health():
     response_model=GenericResponse,
     responses={
         500: {
-            "model": GenericResponse,
             "description": "Internal Server Error",
             "content": {
                 "application/json": {
@@ -57,6 +56,22 @@ async def transform2ghibli(request: Image2GhibliRequest):
     )
 
 
-@router.post("/ghibli/callback", tags=["ghibli"])
+@router.post(
+    "/ghibli/callback",
+    tags=["ghibli"],
+    response_model=CallbackRequest,
+    responses={
+        501: {
+            "model": CallbackRequest,
+            "description": "Task failed"
+        }
+    },
+    summary="Ghibli task completion webhook",
+    description=(
+        "Receives automatic notifications from KIE API when image transformation tasks complete. "
+        "Includes result URLs on success or error details on failure. "
+        "**Intended for KIE API callbacks only.**"
+    ),
+)
 async def check(req: CallbackRequest):
     pass
