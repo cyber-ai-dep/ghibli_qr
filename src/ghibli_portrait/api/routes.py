@@ -2,7 +2,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 from fastapi import Request
 from src.ghibli_portrait.api.responses import CreatedTaskResponse, GenericResponse
-from src.ghibli_portrait.models.schemas import Image2GhibliRequest
+from src.ghibli_portrait.models.schemas import CallbackRequest, Image2GhibliRequest
 from src.ghibli_portrait.services.image_service import get_ghibli
 from src.ghibli_portrait.config import Settings
 
@@ -58,5 +58,5 @@ async def transform2ghibli(request: Image2GhibliRequest):
 
 
 @router.post("/ghibli/callback", tags=["ghibli"])
-async def check(req: Request):
+async def check(req: CallbackRequest):
     pass

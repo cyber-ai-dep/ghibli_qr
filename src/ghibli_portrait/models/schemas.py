@@ -1,5 +1,6 @@
 from enum import Enum
-from typing import List
+import json
+from typing import List, Optional
 from pydantic import Field, BaseModel
 
 
@@ -41,3 +42,53 @@ class Image2GhibliRequest(BaseModel):
         default=AspectRatio._1_1,
         description="Width to height ratio of the image",
     )
+
+class TaskState(str, Enum):
+    SUCCESS = "success"
+    FAIL = "fail"
+
+
+class ResultUrls(BaseModel):
+    """Parsed resultJson structure"""
+    resultUrls: List[str]
+
+
+class TaskData(BaseModel):
+    completeTime: int = Field(..., description="Task completion timestamp in milliseconds")
+    consumeCredits: Optional[int] = Field(None, description="Credits consumed for this task")
+    costTime: int = Field(..., description="Time taken in seconds")
+    createTime: int = Field(..., description="Task creation timestamp in milliseconds")
+    model: str = Field(..., description="Model used for generation")
+    param: str = Field(..., description="JSON string of original request parameters")
+    remainedCredits: Optional[int] = Field(None, description="Remaining credits after task")
+    state: TaskState = Field(..., description="Task state: success or fail")
+    taskId: str = Field(..., description="Unique task identifier")
+    updateTime: int = Field(..., description="Last update timestamp in milliseconds")
+    
+    resultJson: Optional[str] = Field(None, description="JSON string containing result URLs (success only)")
+    
+    failCode: Optional[str] = Field(None, description="Error code (failure only)")
+    failMsg: Optional[str] = Field(None, description="Error message (failure only)")
+    
+    def get_result_urls(self) -> Optional[List[str]]:
+        if self.resultJson:
+            try:
+                result = json.loads(self.resultJson)
+                return result.get("resultUrls", [])
+            except json.JSONDecodeError:
+                return None
+        return None
+
+
+class CallbackRequest(BaseModel):
+    code: int = Field(..., description="Response code (200=success, 501=failure)")
+    data: TaskData = Field(..., description="Task data")
+    msg: str = Field(..., description="Response message")
+    
+    @property
+    def is_success(self) -> bool:
+        return self.code == 200 and self.data.state == TaskState.SUCCESS
+    
+    @property
+    def is_failure(self) -> bool:
+        return self.code != 200 or self.data.state == TaskState.FAIL
