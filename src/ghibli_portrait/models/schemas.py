@@ -96,3 +96,17 @@ class CallbackRequest(BaseModel):
     @property
     def is_failure(self) -> bool:
         return self.code != 200 or self.data.state == TaskState.FAIL
+
+
+class QRLockRequest(BaseModel):
+    url: str = Field(
+        ...,
+        description="URL to encode in the QR code",
+        examples=["https://example.com"]
+    )
+    version: Optional[int] = Field(
+        None,
+        ge=1,
+        le=40,
+        description="QR code version (1-40). If None, automatically determined based on data length"
+    )
