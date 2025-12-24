@@ -72,7 +72,7 @@ async def transform2ghibli(request: Image2GhibliRequest):
         "**Intended for KIE API callbacks only.**"
     ),
 )
-async def check(req: CallbackRequest):
+async def webhook(req: CallbackRequest):
     if req.is_failure:
         return JSONResponse(
             status_code=req.code,
