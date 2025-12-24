@@ -24,3 +24,7 @@ class Settings:
     # Server Settings
     DOMAIN = os.getenv("DOMAIN")
     CALL_BACK = DOMAIN + '/ghibli/callback'
+
+    # Prompts
+    PROMPT_PIC_TO_GHIBLI = "Convert this image to Ghibli style art."
+    PROMPT_GHIBLI_LOCK = " "

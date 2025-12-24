@@ -3,9 +3,11 @@ import json
 from typing import List, Optional
 from pydantic import Field, BaseModel
 
+from src.ghibli_portrait.config import Settings
+
 
 ImgURLs = List[str]
-
+s = Settings()
 
 class Quality(str, Enum):
     BASIC = "basic"
@@ -33,6 +35,8 @@ class Image2GhibliRequest(BaseModel):
         description="List of image URLs to transform to Ghibli style art",
     )
     
+    prompt: str = s.PROMPT_PIC_TO_GHIBLI
+
     quality: Quality = Field(
         default=Quality.BASIC,
         description="Img quality: high (4K) or basic (2K) ― recommended",

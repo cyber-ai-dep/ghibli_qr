@@ -1,9 +1,8 @@
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
-from fastapi import Request
 from src.ghibli_portrait.api.responses import CreatedTaskResponse, GenericResponse
 from src.ghibli_portrait.models.schemas import CallbackRequest, Image2GhibliRequest
-from src.ghibli_portrait.services.image_service import get_ghibli
+from src.ghibli_portrait.services.image_service import generate_img
 from src.ghibli_portrait.config import Settings
 
 router = APIRouter()
@@ -46,7 +45,7 @@ async def health():
     ),
 )
 async def transform2ghibli(request: Image2GhibliRequest):
-    res = get_ghibli(**request.model_dump())
+    res = generate_img(**request.model_dump())
     if res["code"] == 200:
         return CreatedTaskResponse(**res)
 
@@ -74,4 +73,10 @@ async def transform2ghibli(request: Image2GhibliRequest):
     ),
 )
 async def check(req: CallbackRequest):
-    pass
+    if req.is_failure:
+        return JSONResponse(
+            status_code=req.code,
+            content=req.model_dump(),
+        )
+
+    return req.model_dump()
