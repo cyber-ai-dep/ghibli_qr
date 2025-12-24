@@ -1,6 +1,10 @@
-def main():
-    print("Hello from ghibli-qr!")
+from fastapi import FastAPI
+from src.ghibli_portrait.api.routes import router
 
 
-if __name__ == "__main__":
-    main()
+app = FastAPI()
+app.include_router(router)
+
+@app.get('/')
+def root():
+    return
