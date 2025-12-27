@@ -1,15 +1,17 @@
 import asyncio
 from typing import Dict
-
 from uuid import uuid4
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 
-from src.ghibli_portrait.api.responses import CreatedTaskResponse, GenericResponse
+from src.ghibli_portrait.api.responses import (CreatedTaskResponse,
+                                               GenericResponse)
 from src.ghibli_portrait.config import Settings
-from src.ghibli_portrait.models.schemas import CallbackRequest, Image2GhibliRequest, QRLockRequest
+from src.ghibli_portrait.models.schemas import (CallbackRequest,
+                                                Image2GhibliRequest,
+                                                QRLockRequest)
 from src.ghibli_portrait.services.image_service import generate_img
 from src.ghibli_portrait.services.qr_service import get_qr
 
@@ -139,7 +141,7 @@ async def webhook(req: CallbackRequest):
                     }
                 }
             },
-        }
+        },
     },
     summary="Generate QR code with lock screen",
     description=(
@@ -150,12 +152,41 @@ async def webhook(req: CallbackRequest):
 async def get_qr_lock(req: QRLockRequest):
     img = get_qr(**req.model_dump())
 
-    filename = f'{uuid4()}.png'
+    filename = f"{uuid4()}.png"
     filepath = s.TMP_PATH / filename
 
     img.save(filepath)
 
-    url_path = s.DOMAIN + '/tmp/' + filename
+    url_path = s.DOMAIN + "/tmp/" + filename
 
-    return JSONResponse(content={'url': url_path})
+    return JSONResponse(content={"url": url_path})
 
+
+@router.delete(
+    "/qr-lock/{img_id}",
+    tags=["qr"],
+    responses={
+        200: {
+            "description": "Image deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Image a6100b93.png deleted successfully"}
+                }
+            },
+        },
+        404: {
+            "description": "Image not found",
+        },
+    },
+    summary="Delete QR code image",
+    description="Deletes a previously generated QR code image by its filename.",
+)
+async def delete_qr_lock(img_id: str):
+    imgpath = s.TMP_PATH / f"{img_id}.png"
+
+    if not imgpath.exists():
+        raise HTTPException(status_code=404, detail=f"img {img_id} not exists.")
+
+    imgpath.unlink()
+
+    return {"message": f"Image {img_id} deleted successfully"}
