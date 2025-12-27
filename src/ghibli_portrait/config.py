@@ -14,7 +14,10 @@ class Settings:
     QR_PASTE_COORDINATES = (817, 795)
     QR_SIDE_LEN = 685
 
-    LOCK_PATH = Path(__file__).parent.parent / "static" / "lock.png"
+    BASE_PATH = Path(__file__).parent.parent
+    STATIC_PATH = BASE_PATH / 'static'
+    LOCK_PATH = STATIC_PATH / 'lock.png'
+    TMP_PATH = STATIC_PATH / 'tmp'
 
     # Kie Settings
     KIE_API_KEY = os.getenv("KIE_API_KEY")

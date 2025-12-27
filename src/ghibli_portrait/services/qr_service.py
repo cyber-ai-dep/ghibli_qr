@@ -10,7 +10,7 @@ def get_qr(url: str, version: int = None) -> Image:
     lock_img = Image.open(s.LOCK_PATH).convert("RGBA")
 
     qr = qrcode.QRCode(
-        version or s.QR_VERSION,
+        version,
         error_correction=qrcode.ERROR_CORRECT_M,
         box_size=10,
         border=0,

@@ -1,14 +1,17 @@
 import asyncio
 from typing import Dict
 
+from uuid import uuid4
+
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 
 from src.ghibli_portrait.api.responses import CreatedTaskResponse, GenericResponse
 from src.ghibli_portrait.config import Settings
-from src.ghibli_portrait.models.schemas import CallbackRequest, Image2GhibliRequest
+from src.ghibli_portrait.models.schemas import CallbackRequest, Image2GhibliRequest, QRLockRequest
 from src.ghibli_portrait.services.image_service import generate_img
+from src.ghibli_portrait.services.qr_service import get_qr
 
 router = APIRouter()
 pending_tasks: Dict[str, asyncio.Future] = {}
@@ -65,7 +68,7 @@ async def transform2ghibli(request: Image2GhibliRequest):
     pending_tasks[task_id] = future
 
     try:
-        webhook_result = await asyncio.wait_for(future, timeout=120)
+        webhook_result = await asyncio.wait_for(future, timeout=300)
         return webhook_result.model_dump()
 
     except asyncio.TimeoutError:
@@ -108,3 +111,51 @@ async def webhook(req: CallbackRequest):
         )
 
     return req.model_dump()
+
+
+@router.post(
+    "/qr-lock",
+    tags=["qr"],
+    response_model=None,
+    responses={
+        200: {
+            "description": "QR code successfully generated",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "url": "https://example.com/tmp/a6100b93-a8f8-4dce-90fc-39e900864a58.png"
+                    }
+                }
+            },
+        },
+        500: {
+            "description": "Internal Server Error",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "code": 500,
+                        "message": "Failed to generate QR code",
+                        "data": {},
+                    }
+                }
+            },
+        }
+    },
+    summary="Generate QR code with lock screen",
+    description=(
+        "Generates a QR code image with lock screen."
+        "Returns a publicly accessible URL to the generated PNG image."
+    ),
+)
+async def get_qr_lock(req: QRLockRequest):
+    img = get_qr(**req.model_dump())
+
+    filename = f'{uuid4()}.png'
+    filepath = s.TMP_PATH / filename
+
+    img.save(filepath)
+
+    url_path = s.DOMAIN + '/tmp/' + filename
+
+    return JSONResponse(content={'url': url_path})
+
