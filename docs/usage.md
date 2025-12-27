@@ -187,7 +187,7 @@ Ensure the URL is properly formatted and accessible:
 1. **Image Quality:** Use high-resolution source images (at least 1024x1024) for best Ghibli results
 2. **QR URL:** Keep URLs short for better QR code readability
 3. **Prompt Engineering:** Be specific in Step 3 prompts for better composition
-4. **Processing Time:** Each Ghibli transformation takes 120-180 seconds depending on quality
+4. **Processing Time:** Each Ghibli transformation takes 40-60 seconds depending on quality
 
 ---
 
@@ -199,4 +199,4 @@ Profile URL → [Step 2] → QR Lock Image
 Ghibli Person + QR Lock → [Step 3] → Final Portrait with Lock
 ```
 
-**Total Processing Time:** ~X
+**Total Processing Time:** ~ [90 - 120]s
