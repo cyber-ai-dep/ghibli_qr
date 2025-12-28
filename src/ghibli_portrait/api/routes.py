@@ -8,21 +8,17 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 
-from src.ghibli_portrait.api.responses import (
-    HealthData,
-    HealthResponse,
-    ImageGenerationData,
-    ImageGenerationResponse,
-    QRGenerationData,
-    QRGenerationResponse,
-)
+from src.ghibli_portrait.api.responses import (DeletionData, DeletionResponse,
+                                               HealthData, HealthResponse,
+                                               ImageGenerationData,
+                                               ImageGenerationResponse,
+                                               QRGenerationData,
+                                               QRGenerationResponse)
 from src.ghibli_portrait.config import Settings
-from src.ghibli_portrait.models.schemas import (
-    CallbackRequest,
-    GhibliQRRequest,
-    Image2GhibliRequest,
-    QRLockRequest,
-)
+from src.ghibli_portrait.models.schemas import (CallbackRequest,
+                                                GhibliQRRequest,
+                                                Image2GhibliRequest,
+                                                QRLockRequest)
 from src.ghibli_portrait.services.image_service import generate_img
 from src.ghibli_portrait.services.qr_service import get_qr
 
@@ -167,23 +163,12 @@ async def get_qr_lock(req: QRLockRequest):
 @router.delete(
     "/qr-lock/{img_id}",
     tags=["qr"],
-    responses={
-        200: {
-            "description": "Image deleted successfully",
-            "content": {
-                "application/json": {
-                    "example": {"message": "Image a6100b93.png deleted successfully"}
-                }
-            },
-        },
-        404: {
-            "description": "Image not found",
-        },
-    },
+    response_model=DeletionResponse,
     summary="Delete QR code image",
     description="Deletes a previously generated QR code image by its filename.",
 )
 async def delete_qr_lock(img_id: str):
+    img_id = img_id.replace(".png", "")
     imgpath = s.TMP_PATH / f"{img_id}.png"
 
     if not imgpath.exists():
@@ -191,7 +176,10 @@ async def delete_qr_lock(img_id: str):
 
     imgpath.unlink()
 
-    return {"message": f"Image {img_id} deleted successfully"}
+    return DeletionResponse(
+        message=f"Image {img_id} deleted successfully",
+        data=DeletionData(deleted_id=img_id),
+    )
 
 
 @router.post(
