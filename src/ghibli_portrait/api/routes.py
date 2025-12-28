@@ -1,4 +1,6 @@
 import asyncio
+import json
+from datetime import datetime
 from typing import Dict
 from uuid import uuid4
 
@@ -6,16 +8,16 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 
-from src.ghibli_portrait.api.responses import (CreatedTaskResponse,
-                                               GenericResponse, TaskCreatedData)
+from src.ghibli_portrait.api.responses import (HealthData, HealthResponse,
+                                               ImageGenerationData,
+                                               ImageGenerationResponse)
 from src.ghibli_portrait.config import Settings
-from src.ghibli_portrait.models.schemas import (CallbackRequest, GhibliQRRequest,
+from src.ghibli_portrait.models.schemas import (CallbackRequest,
+                                                GhibliQRRequest,
                                                 Image2GhibliRequest,
                                                 QRLockRequest)
 from src.ghibli_portrait.services.image_service import generate_img
 from src.ghibli_portrait.services.qr_service import get_qr
-
-import json
 
 router = APIRouter()
 pending_tasks: Dict[str, asyncio.Future] = {}
@@ -24,32 +26,18 @@ s = Settings()
 
 @router.get(
     "/health",
-    response_model=GenericResponse,
+    response_model=HealthResponse,
     summary="Liveness probe",
     description="Returns 200 if the service is alive.",
 )
 async def health():
-    return GenericResponse()
+    return HealthResponse(data=HealthData(), message="Service is running")
 
 
 @router.post(
     "/ghibli",
     tags=["ghibli"],
-    response_model=CallbackRequest,
-    responses={
-        500: {
-            "description": "Internal Server Error",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "code": 500,
-                        "message": "Internal server error",
-                        "data": {},
-                    }
-                }
-            },
-        }
-    },
+    response_model=ImageGenerationResponse,
     summary="Ghibli-style portrait generator",
     description=(
         "Submit one or more images to Ghibli-stylised version "
@@ -59,21 +47,38 @@ async def health():
 )
 async def transform2ghibli(request: Image2GhibliRequest):
     res = generate_img(**request.model_dump())
+
     if res["code"] != 200:
-        return JSONResponse(
-            status_code=res["code"],
-            content=GenericResponse(code=res["code"], message=res["msg"]).model_dump(),
+        raise HTTPException(
+            status_code=res["code"], detail=res["msg"] + res["data"]["failMsg"]
         )
 
-    task_res = CreatedTaskResponse(**res)
-    task_id = task_res.data.taskId
+    task_id = res["data"]["taskId"]
 
     future = asyncio.get_event_loop().create_future()
     pending_tasks[task_id] = future
 
     try:
-        webhook_result = await asyncio.wait_for(future, timeout=300)
-        return webhook_result.model_dump()
+        webhook_result: CallbackRequest = await asyncio.wait_for(future, timeout=300)
+
+        if webhook_result.is_failure:
+            raise HTTPException(
+                status_code=webhook_result.code,
+                detail=f"{webhook_result.msg}\n\n{webhook_result.data.failMsg}",
+            )
+
+        params = json.loads(json.loads(webhook_result.data.param)['input'])
+
+        return ImageGenerationResponse(
+            message=webhook_result.msg,
+            data=ImageGenerationData(
+                result_urls=json.loads(webhook_result.data.resultJson)["resultUrls"],
+                model=webhook_result.data.model,
+                cost_time=webhook_result.data.costTime,
+                quality=params['quality'],
+                aspect_ratio=params['aspect_ratio']
+            ),
+        )
 
     except asyncio.TimeoutError:
         pending_tasks.pop(task_id, None)
@@ -81,6 +86,12 @@ async def transform2ghibli(request: Image2GhibliRequest):
         raise HTTPException(
             status_code=504, detail=f"Webhook timeout for task {task_id}"
         )
+
+    except HTTPException as e:
+        pending_tasks.pop(task_id, None)
+
+        raise
+
     except Exception as e:
         pending_tasks.pop(task_id, None)
 
@@ -91,7 +102,6 @@ async def transform2ghibli(request: Image2GhibliRequest):
     "/ghibli/callback",
     tags=["ghibli"],
     response_model=CallbackRequest,
-    responses={501: {"model": CallbackRequest, "description": "Task failed"}},
     summary="Ghibli task completion webhook (called by external API)",
     description=(
         "Receives automatic notifications from KIE API when image transformation tasks complete. "
@@ -194,7 +204,6 @@ async def delete_qr_lock(img_id: str):
     return {"message": f"Image {img_id} deleted successfully"}
 
 
-
 @router.post(
     "/ghibli-qr",
     tags=["ghibli"],
@@ -205,8 +214,7 @@ async def delete_qr_lock(img_id: str):
                 "application/json": {
                     "example": {
                         "img_url": "https://example.com/tmp/a6100b93-a8f8-4dce-90fc-39e900864a58.png",
-                        "url": "https://google.com"
-
+                        "url": "https://google.com",
                     }
                 }
             },
@@ -245,7 +253,6 @@ async def automated_pipeline(request: GhibliQRRequest):
     task_res = CreatedTaskResponse(**res)
     task_id = task_res.data.taskId
 
-
     future = asyncio.get_event_loop().create_future()
 
     img = get_qr(request.url)
@@ -257,20 +264,16 @@ async def automated_pipeline(request: GhibliQRRequest):
 
     qr_lock_url_path = s.DOMAIN + "/tmp/" + filename
 
-
     pending_tasks[task_id] = future
 
     try:
         webhook_result: CallbackRequest = await asyncio.wait_for(future, timeout=300)
-        ghibli_qr_url = json.loads(webhook_result.data.resultJson)['resultUrls'][0]
+        ghibli_qr_url = json.loads(webhook_result.data.resultJson)["resultUrls"][0]
         res = generate_img([ghibli_qr_url, qr_lock_url_path], s.PROMPT_GHIBLI_LOCK)
 
         if res["code"] != 200:
-            raise HTTPException(
-                status_code=res["code"],
-                detail=res["msg"]
-            )
-        
+            raise HTTPException(status_code=res["code"], detail=res["msg"])
+
         task = CreatedTaskResponse(**res)
         task_id = task.data.taskId
 
@@ -280,12 +283,12 @@ async def automated_pipeline(request: GhibliQRRequest):
         try:
             webhook_result: CallbackRequest = await asyncio.wait_for(future, 300)
             return webhook_result.model_dump()
-        
+
         except asyncio.TimeoutError as e:
             pending_tasks.pop(task_id, None)
             raise HTTPException(
-            status_code=504, detail=f"Webhook timeout for task {task_id}"
-        )
+                status_code=504, detail=f"Webhook timeout for task {task_id}"
+            )
 
         except Exception as e:
             pending_tasks.pop(task_id, None)
