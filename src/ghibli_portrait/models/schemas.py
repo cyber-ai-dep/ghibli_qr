@@ -110,3 +110,21 @@ class QRLockRequest(BaseModel):
         le=40,
         description="QR code version (1-40). If None, automatically determined based on data length"
     )
+
+
+class GhibliQRRequest(BaseModel):
+
+    url: str = Field(
+        ...,
+        description="URL to encode in the QR code",
+        examples=["https://example.com"]
+    )
+
+    img_urls: str = Field(
+        ...,
+        min_length=1,
+        examples=[
+            ["https://images.pexels.com/photos/1563356/pexels-photo-1563356.jpeg"]
+        ],
+        description="Image URL to transform to Ghibli style art",
+    )
