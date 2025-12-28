@@ -24,11 +24,23 @@ GET /health
 ```
 Returns service liveness status.
 
+**Response:**
+```json
+{
+  "code": 200,
+  "data": {
+    "status": "healthy",
+    "timestamp": "2025-12-28T12:00:00"
+  },
+  "message": "Service is running"
+}
+```
+
 ### Ghibli Portrait Generation
 ```
 POST /ghibli
 ```
-Transforms images to Ghibli-style art using external KIE API.
+Transforms images to Ghibli-style art using external KIE API (model: `seedream/4.5-edit`).
 
 **Request:**
 ```json
@@ -41,12 +53,24 @@ Transforms images to Ghibli-style art using external KIE API.
 ```
 
 **Response:**
-Returns `CallbackRequest` with task results after webhook completes.
+```json
+{
+  "code": 200,
+  "data": {
+    "result_urls": ["https://example.com/generated.jpg"],
+    "cost_time": 45,
+    "model": "seedream/4.5-edit",
+    "quality": "basic",
+    "aspect_ratio": "1:1"
+  },
+  "message": "Task completed successfully"
+}
+```
 
 **Notes:**
 - Async operation - waits for KIE API callback
 - Uses webhook at `/ghibli/callback` (internal)
-- Timeout: configurable via settings
+- Default timeout: 300 seconds (5 minutes)
 
 ### Ghibli Webhook (Internal)
 ```
@@ -71,7 +95,12 @@ Generates QR code embedded in lock screen image.
 **Response:**
 ```json
 {
-  "url": "https://your-domain.com/tmp/{uuid}.png"
+  "code": 200,
+  "data": {
+    "qr_url": "https://your-domain.com/tmp/{uuid}.png",
+    "encoded_url": "https://example.com"
+  },
+  "message": "QR/Lock image created successfully."
 }
 ```
 
@@ -79,7 +108,57 @@ Generates QR code embedded in lock screen image.
 ```
 DELETE /qr-lock/{img_id}
 ```
-Deletes generated QR code image by ID.
+Deletes generated QR code image by ID (with or without .png extension).
+
+**Response:**
+```json
+{
+  "code": 200,
+  "data": {
+    "deleted_id": "{uuid}"
+  },
+  "message": "Image {uuid} deleted successfully"
+}
+```
+
+### Automated Ghibli + QR Pipeline
+```
+POST /ghibli-qr
+```
+Fully automated pipeline that:
+1. Transforms input image to Ghibli style
+2. Generates QR code with lock screen overlay
+3. Combines Ghibli image with QR lock screen
+4. Returns final composite image URL
+
+**Request:**
+```json
+{
+  "img_url": "https://example.com/photo.jpg",
+  "url": "https://example.com/destination"
+}
+```
+
+**Response:**
+```json
+{
+  "code": 200,
+  "data": {
+    "result_urls": ["https://example.com/final-ghibli-qr.jpg"],
+    "cost_time": 95,
+    "model": "seedream/4.5-edit",
+    "quality": "basic",
+    "aspect_ratio": "1:1"
+  },
+  "message": "Task completed successfully"
+}
+```
+
+**Notes:**
+- Executes two image generation tasks sequentially
+- Total cost_time includes both transformations
+- Uses predefined prompts from settings (PROMPT_PIC_TO_GHIBLI, PROMPT_GHIBLI_LOCK)
+- Automatically cleans up intermediate QR lock image reference
 
 
 ## Configuration
@@ -110,7 +189,7 @@ Project uses `gipt` for AI-generated commits with gitmoji style.
    - POST `/ghibli` initiates task with KIE API
    - Server waits for callback at `/ghibli/callback`
    - Tracks pending tasks in memory
-   - Returns final result or timeout error
+   - Returns final result or timeout error (300s default)
 
 2. **QR Code Storage:**
    - Images saved to `src/static/tmp/`
@@ -121,6 +200,14 @@ Project uses `gipt` for AI-generated commits with gitmoji style.
    - Base lock image: `src/static/lock.png`
    - QR code embedded at calculated position
    - Output: PNG with transparency
+
+4. **Automated Pipeline (`/ghibli-qr`):**
+   - Step 1: Transform input image to Ghibli style
+   - Step 2: Generate QR lock screen image
+   - Step 3: Combine Ghibli image with QR lock overlay
+   - Sequential task execution with separate callbacks
+   - Aggregates total processing time from both transformations
+   - Returns final composite image URL
 
 ## Troubleshooting
 
