@@ -1,22 +1,45 @@
+from datetime import datetime
+from typing import Generic, List, Optional, TypeVar
+
 from pydantic import BaseModel, Field
 
+from src.ghibli_portrait.models.schemas import AspectRatio, Quality
 
-class GenericResponse(BaseModel):
+T = TypeVar("T")
+
+
+class SuccessResponse(BaseModel, Generic[T]):
     code: int = 200
-    message: str = "success"
-    data: dict = Field(
-        default_factory=dict,
-        example={
-            "taskId": "af11b48786cb5bb6c09e3aecf148599f",
-            "recordId": "af11b48786cb5b4236403aecf148599f",
-        },
-    )
+    data: T
+    message: Optional[str] = None
 
 
-class TaskCreatedData(BaseModel):
-    taskId: str = Field("af11b48786cb5bb6c6403aecf148599f")
-    recordId: str = Field("af11b48786cb5bb6c6403aecf148599f")
+class HealthData(BaseModel):
+    status: str = Field(default="healthy", description="Service health status")
+    timestamp: Optional[str] = Field(default=datetime.utcnow())
 
 
-class CreatedTaskResponse(GenericResponse):
-    data: TaskCreatedData = TaskCreatedData()
+class ImageGenerationData(BaseModel):
+    """Data returned after successful image generation"""
+
+    result_urls: List[str] = Field(..., description="Generated image URLs")
+    cost_time: int = Field(..., description="Processing time in seconds")
+    model: str = Field(..., description="Model used for generation")
+
+    quality: Optional[Quality] = Quality.BASIC
+    aspect_ratio: Optional[AspectRatio] = AspectRatio._1_1
+
+
+class QRGenerationData(BaseModel):
+    qr_url: str = Field(..., description="Generated QR code image URL")
+    encoded_url: str = Field(..., description="URL encoded in the QR code")
+
+
+class DeletionData(BaseModel):
+    deleted_id: str = Field(..., description="ID of deleted resource")
+
+
+ImageGenerationResponse = SuccessResponse[ImageGenerationData]
+QRGenerationResponse = SuccessResponse[QRGenerationData]
+DeletionResponse = SuccessResponse[DeletionData]
+HealthResponse = SuccessResponse[HealthData]
