@@ -120,11 +120,9 @@ class GhibliQRRequest(BaseModel):
         examples=["https://example.com"]
     )
 
-    img_urls: str = Field(
+    img_url: str = Field(
         ...,
         min_length=1,
-        examples=[
-            ["https://images.pexels.com/photos/1563356/pexels-photo-1563356.jpeg"]
-        ],
+        examples=["https://images.pexels.com/photos/1563356/pexels-photo-1563356.jpeg"],
         description="Image URL to transform to Ghibli style art",
     )

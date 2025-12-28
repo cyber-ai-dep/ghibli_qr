@@ -30,4 +30,4 @@ class Settings:
 
     # Prompts
     PROMPT_PIC_TO_GHIBLI = "Convert this image to Ghibli style art."
-    PROMPT_GHIBLI_LOCK = " "
+    PROMPT_GHIBLI_LOCK = "Make me holding this lock in my hands."
