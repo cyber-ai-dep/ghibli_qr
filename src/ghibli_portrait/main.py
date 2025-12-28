@@ -9,7 +9,3 @@ app.include_router(router)
 s = Settings()
 
 app.mount('/tmp', StaticFiles(directory=s.TMP_PATH), name='tmp')
-
-@app.get('/')
-def root():
-    return {'status': 'ok'}

@@ -34,7 +34,7 @@ s = Settings()
     description="Returns 200 if the service is alive.",
 )
 async def health():
-    return HealthResponse(data=HealthData(), message="Service is running")
+    return HealthResponse(data=HealthData(), message="Ghibli Portrait is running")
 
 
 @router.post(
