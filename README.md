@@ -80,13 +80,65 @@ POST /ghibli-qr
 }
 ```
 
+### Generate QR Code with Optional URL Shortening
+
+```bash
+POST /qr-lock
+```
+
+**With URL shortening:**
+```json
+{
+  "url": "https://your-very-long-url.com/path/to/resource",
+  "shorten_url": true,
+  "version": 1
+}
+```
+
+**Response:**
+```json
+{
+  "code": 200,
+  "message": "QR/Lock image created successfully.",
+  "data": {
+    "qr_url": "https://cdn.example.com/tmp/uuid.png",
+    "encoded_url": "https://your-very-long-url.com/path/to/resource",
+    "short_url": {
+      "url": "https://your-domain.com/s/abc123",
+      "code": "abc123"
+    }
+  }
+}
+```
+
+### Get Shortened URL
+
+```bash
+GET /qr-url/?url=https://your-long-url.com
+```
+
+**Response:**
+```json
+{
+  "code": 200,
+  "message": "Short URL is retrieved successfully",
+  "data": {
+    "url": "https://your-domain.com/s/abc123",
+    "code": "abc123"
+  }
+}
+```
+
+> **Note:** The `/qr-url` endpoint uses deterministic hashing, so the same URL will always produce the same short code, regardless of whether it was previously shortened.
+
 ## 📋 Available Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Service health check |
 | `/ghibli` | POST | Transform image to Ghibli style |
-| `/qr-lock` | POST | Generate QR code with lock screen |
+| `/qr-lock` | POST | Generate QR code with lock screen (with optional URL shortening) |
+| `/qr-url` | GET | Get or recover shortened URL using deterministic hashing |
 | `/ghibli-qr` | POST | Full automated pipeline |
 | `/qr-lock/{img_id}` | DELETE | Delete temporary QR image |
 
@@ -98,6 +150,7 @@ See [usage.md](./docs/usage.md) for detailed API documentation and examples.
 
 - **Ghibli-style transformation** powered by KIE Image Model
 - **QR code generation** with custom lock screen design
+- **URL shortening** with deterministic hashing for consistent short codes
 - **Automated pipeline** for one-step processing
 - **Quality options**: Basic (2K) or High (4K)
 - **Multiple aspect ratios**: 1:1, 4:3, 16:9, and more
