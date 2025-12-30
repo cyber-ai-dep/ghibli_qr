@@ -82,13 +82,14 @@ Receives callbacks from KIE API. **Not for direct use.**
 ```
 POST /qr-lock
 ```
-Generates QR code embedded in lock screen image.
+Generates QR code embedded in lock screen image with optional URL shortening.
 
 **Request:**
 ```json
 {
   "url": "https://example.com",
-  "version": 1  // Optional: 1-40, auto-determined if null
+  "version": 1,  // Optional: 1-40, auto-determined if null
+  "shorten_url": true  // Optional: if true, URL is shortened before encoding in QR
 }
 ```
 
@@ -98,11 +99,19 @@ Generates QR code embedded in lock screen image.
   "code": 200,
   "data": {
     "qr_url": "https://your-domain.com/tmp/{uuid}.png",
-    "encoded_url": "https://example.com"
+    "encoded_url": "https://example.com",
+    "short_url": {  // Present only if shorten_url was true
+      "url": "https://your-domain.com/s/{code}",
+      "code": "{short_code}"
+    }
   },
   "message": "QR/Lock image created successfully."
 }
 ```
+
+**Notes:**
+- When `shorten_url` is true, the QR code encodes the shortened URL instead of the original
+- URL shortening uses deterministic hashing - same URL always produces same short code
 
 ### Delete QR Image
 ```
@@ -120,6 +129,35 @@ Deletes generated QR code image by ID (with or without .png extension).
   "message": "Image {uuid} deleted successfully"
 }
 ```
+
+### Get Shortened URL
+```
+GET /qr-url/?url={url}
+```
+Returns a shortened URL for any given URL using deterministic hashing.
+
+**Request:**
+```
+GET /qr-url/?url=https://example.com/very/long/path
+```
+
+**Response:**
+```json
+{
+  "code": 200,
+  "data": {
+    "url": "https://your-domain.com/s/{code}",
+    "code": "{short_code}"
+  },
+  "message": "Short URL is retrieved successfully"
+}
+```
+
+**Important Notes:**
+- **No validation performed**: This endpoint always returns a short code, even for invalid or non-existent URLs
+- **Deterministic**: The same URL will always produce the same short code
+- **Idempotent**: Can be called multiple times for the same URL without side effects
+- **No persistence check**: Returns short code regardless of whether the URL was previously shortened
 
 ### Automated Ghibli + QR Pipeline
 ```
@@ -168,6 +206,7 @@ Environment variables (`.env`):
 KIE_API_KEY=your_api_key
 DOMAIN=https://your-domain.com
 KIE_IMG_MODEL=seedream/4.5-edit
+SHORT_CODE_LENGTH=8
 ```
 
 ## Development
@@ -196,12 +235,18 @@ Project uses `gipt` for AI-generated commits with gitmoji style.
    - Publicly accessible via server
    - Manual cleanup via DELETE endpoint
 
-3. **Lock Screen Overlay:**
+3. **URL Shortening:**
+   - Deterministic hashing: same URL always produces same short code
+   - No validation or persistence checks performed
+   - Works for any URL (valid or invalid, existing or non-existing)
+   - Optional integration with QR code generation
+
+4. **Lock Screen Overlay:**
    - Base lock image: `src/static/lock.png`
    - QR code embedded at calculated position
    - Output: PNG with transparency
 
-4. **Automated Pipeline (`/ghibli-qr`):**
+5. **Automated Pipeline (`/ghibli-qr`):**
    - Step 1: Transform input image to Ghibli style
    - Step 2: Generate QR lock screen image
    - Step 3: Combine Ghibli image with QR lock overlay
