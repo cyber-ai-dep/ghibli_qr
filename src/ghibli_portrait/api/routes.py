@@ -13,7 +13,7 @@ from src.ghibli_portrait.api.responses import (DeletionData, DeletionResponse,
                                                ImageGenerationData,
                                                ImageGenerationResponse,
                                                QRGenerationData,
-                                               QRGenerationResponse)
+                                               QRGenerationResponse, ShortURLData)
 from src.ghibli_portrait.config import Settings
 from src.ghibli_portrait.models.schemas import (CallbackRequest,
                                                 GhibliQRRequest,
@@ -21,6 +21,7 @@ from src.ghibli_portrait.models.schemas import (CallbackRequest,
                                                 QRLockRequest)
 from src.ghibli_portrait.services.image_service import generate_img
 from src.ghibli_portrait.services.qr_service import get_qr
+from src.ghibli_portrait.utils.url_utils import shorten
 
 router = APIRouter()
 pending_tasks: Dict[str, asyncio.Future] = {}
@@ -141,8 +142,16 @@ async def webhook(req: CallbackRequest):
     ),
 )
 async def get_qr_lock(req: QRLockRequest):
+    short_url_data = None
+    
+    if req.shorten_url is True:
+        short_url_data = shorten(req.url)
+
     try:
-        img = get_qr(**req.model_dump())
+        img = get_qr(
+            url=short_url_data.url if req.shorten_url is True else req.url, 
+            version=req.version
+            )
 
         filename = f"{uuid4()}.png"
         filepath = s.TMP_PATH / filename
@@ -153,7 +162,7 @@ async def get_qr_lock(req: QRLockRequest):
 
         return QRGenerationResponse(
             message="QR/Lock image created successfully.",
-            data=QRGenerationData(qr_url=url_path, encoded_url=req.url),
+            data=QRGenerationData(qr_url=url_path, encoded_url=req.url, short_url=short_url_data),
         )
 
     except Exception as e:

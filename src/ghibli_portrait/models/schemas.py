@@ -110,6 +110,10 @@ class QRLockRequest(BaseModel):
         le=40,
         description="QR code version (1-40). If None, automatically determined based on data length"
     )
+    shorten_url: Optional[bool] = Field(
+        False,
+        description="Whether to shorten the URL before encoding it in the QR code"
+    )
 
 
 class GhibliQRRequest(BaseModel):

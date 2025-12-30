@@ -30,13 +30,15 @@ class ImageGenerationData(BaseModel):
     aspect_ratio: Optional[AspectRatio] = AspectRatio._1_1
 
 
-class QRGenerationData(BaseModel):
-    qr_url: str = Field(..., description="Generated QR code image URL")
-    encoded_url: str = Field(..., description="URL encoded in the QR code")
-
 class ShortURLData(BaseModel):
     url: str = Field(..., description="The complete shortened URL")
-    short_code: str = Field(..., description="The generated short code/slug for the URL")
+    code: str = Field(..., description="The generated short code/slug for the URL")
+
+class QRGenerationData(BaseModel):
+    qr_url: str = Field(..., description="Generated QR code image URL")
+    encoded_url: str = Field(..., description="Original URL encoded in the QR code")
+
+    short_url: Optional[ShortURLData] = Field(None, description="Shortened URL details")
 
 class DeletionData(BaseModel):
     deleted_id: str = Field(..., description="ID of deleted resource")
