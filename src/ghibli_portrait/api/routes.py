@@ -13,7 +13,7 @@ from src.ghibli_portrait.api.responses import (DeletionData, DeletionResponse,
                                                ImageGenerationData,
                                                ImageGenerationResponse,
                                                QRGenerationData,
-                                               QRGenerationResponse, ShortURLData)
+                                               QRGenerationResponse, ShortURLData, ShortURLResponse)
 from src.ghibli_portrait.config import Settings
 from src.ghibli_portrait.models.schemas import (CallbackRequest,
                                                 GhibliQRRequest,
@@ -190,6 +190,20 @@ async def delete_qr_lock(img_id: str):
         data=DeletionData(deleted_id=img_id),
     )
 
+@router.get(
+    "/qr-url/",
+    tags=["qr"],
+    response_model=ShortURLResponse,
+    summary="Get or recover previously shortened URL",
+    description=(
+        "Returns the shortened URL for any given URL using deterministic hashing. "
+        "IMPORTANT: This endpoint ALWAYS returns a short code, even for invalid or non-existent URLs. "
+        "No validation is performed - the same URL will always produce the same short code, "
+        "regardless of whether it was previously shortened or not."
+    ),
+)
+async def get_short_url(url: str):
+    return ShortURLResponse(data=shorten(url), message="Short URL is retrieved successfully")
 
 @router.post(
     "/ghibli-qr",
