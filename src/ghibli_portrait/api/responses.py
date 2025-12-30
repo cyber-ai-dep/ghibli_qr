@@ -34,6 +34,9 @@ class QRGenerationData(BaseModel):
     qr_url: str = Field(..., description="Generated QR code image URL")
     encoded_url: str = Field(..., description="URL encoded in the QR code")
 
+class ShortURLData(BaseModel):
+    url: str = Field(..., description="The complete shortened URL")
+    short_code: str = Field(..., description="The generated short code/slug for the URL")
 
 class DeletionData(BaseModel):
     deleted_id: str = Field(..., description="ID of deleted resource")
