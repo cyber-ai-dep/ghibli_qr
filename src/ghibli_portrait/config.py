@@ -13,6 +13,7 @@ class Settings:
     QR_BACK_COLOR = "#2a2d42"
     QR_PASTE_COORDINATES = (817, 795)
     QR_SIDE_LEN = 685
+    QR_SHORT_CODE_LENGTH = int(os.getenv('SHORT_CODE_LENGTH', 8))  
 
     BASE_PATH = Path(__file__).parent.parent
     STATIC_PATH = BASE_PATH / 'static'
