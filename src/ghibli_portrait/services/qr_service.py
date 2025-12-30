@@ -11,7 +11,7 @@ def get_qr(url: str, version: int = None) -> Image:
 
     qr = qrcode.QRCode(
         version,
-        error_correction=qrcode.ERROR_CORRECT_M,
+        error_correction=qrcode.ERROR_CORRECT_L,
         box_size=10,
         border=0,
     )
