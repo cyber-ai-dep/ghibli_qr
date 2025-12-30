@@ -6,7 +6,7 @@ Complete workflow for creating a Ghibli-style portrait holding a personalized QR
 
 This API allows you to:
 1. Transform a person's photo into Ghibli-style art
-2. Generate a QR code embedded in a lock screen image
+2. Generate a QR code embedded in a lock screen image (with optional URL shortening)
 3. Combine both images into a final portrait showing the person holding their QR lock
 
 **You can either:**
@@ -32,7 +32,7 @@ Check if the service is running:
 ```
 
 ## Complete Workflow
-![full-workflow](./imgs/full-workflow.png)
+![full-workflow](./imgs/full-workflow.jpg)
 ### Step 1: Convert Person Image to Ghibli Style
 
 Transform the original person photo into Ghibli-style art.
@@ -75,29 +75,62 @@ Transform the original person photo into Ghibli-style art.
 
 ### Step 2: Generate QR Lock Image
 
-Create a QR code embedded in a lock screen that links to the user's profile.
+Create a QR code embedded in a lock screen that links to the user's profile. Optionally shorten the URL for better QR code readability.
 
 **Endpoint:** `POST /qr-lock`
 
-**Request:**
+**Request (without URL shortening):**
 ```json
 {
   "url": "https://google.com",
-  "version": null
+  "version": null,
+  "shorten_url": false
 }
 ```
 
-**Response:**
+**Request (with URL shortening):**
+```json
+{
+  "url": "https://very-long-domain.com/with/many/path/segments?and=query&parameters=here",
+  "version": null,
+  "shorten_url": true
+}
+```
+
+**Response (without URL shortening):**
 ```json
 {
   "code": 200,
   "message": "QR/Lock image created successfully.",
   "data": {
     "qr_url": "https://your-domain.com/tmp/a6100b93-a8f8-4dce-90fc-39e900864a58.png",
-    "encoded_url": "https://google.com"
+    "encoded_url": "https://google.com",
+    "short_url": null
   }
 }
 ```
+
+**Response (with URL shortening):**
+```json
+{
+  "code": 200,
+  "message": "QR/Lock image created successfully.",
+  "data": {
+    "qr_url": "https://your-domain.com/tmp/a6100b93-a8f8-4dce-90fc-39e900864a58.png",
+    "encoded_url": "https://very-long-domain.com/with/many/path/segments?and=query&parameters=here",
+    "short_url": {
+      "url": "https://your-domain.com/s/abc123",
+      "code": "abc123"
+    }
+  }
+}
+```
+
+**Parameters:**
+- `url` (required): The URL to encode in the QR code
+- `version` (optional): QR code version/size (null for auto)
+- `shorten_url` (optional): Boolean to enable URL shortening (default: false)
+
 <p align="center">
   <img
     src="./imgs/ef45bec0-fa33-4c29-948a-2bd216f20d11.png"
@@ -151,7 +184,50 @@ Combine the Ghibli-style person image with the QR lock image.
 
 ---
 
-## Automated Pipeline (Recommended)
+## URL Shortening
+
+### Get Short URL for Any URL
+
+Retrieve or generate a shortened URL using deterministic hashing. This endpoint always returns a short code for any given URL, using consistent hashing - the same URL will always produce the same short code.
+
+**Endpoint:** `GET /qr-url/`
+
+**Query Parameters:**
+- `url` (required): The URL to shorten
+
+**Example Request:**
+```
+GET /qr-url/?url=https://very-long-domain.com/with/many/path/segments
+```
+
+**Response:**
+```json
+{
+  "code": 200,
+  "message": "Short URL is retrieved successfully",
+  "data": {
+    "url": "https://your-domain.com/s/abc123",
+    "code": "abc123"
+  }
+}
+```
+
+**Important Notes:**
+- This endpoint uses deterministic hashing - the same URL always produces the same short code
+- No validation is performed on the URL
+- The endpoint returns a short code even for invalid or non-existent URLs
+- Short codes are generated on-the-fly and don't require pre-registration
+- Use this endpoint to recover previously generated short codes for any URL
+
+**Use Cases:**
+1. Pre-generate short codes before creating QR locks
+2. Recover previously generated short codes
+3. Check what short code a given URL maps to
+4. Share shortened URLs independently of QR code generation
+
+---
+
+## Automated Pipeline
 
 For convenience, use the automated endpoint that combines all three steps into one request.
 
@@ -288,10 +364,12 @@ This endpoint is called automatically by the external KIE API when image transfo
 
 1. **Use Automated Pipeline:** For most use cases, `/ghibli-qr` is recommended for simplicity
 2. **Image Quality:** Use high-resolution source images (at least 1024x1024) for best Ghibli results
-3. **QR URL:** Keep URLs short for better QR code readability
-4. **Prompt Engineering:** Use manual pipeline if you need custom prompts in Step 3 for better composition
-5. **Processing Time:** Each Ghibli transformation takes 40-60 seconds depending on quality
-6. **Timeout:** The API waits up to 5 minutes (300 seconds) for each transformation to complete
+3. **URL Shortening:** Enable `shorten_url: true` for long URLs to improve QR code readability and scannability
+4. **Deterministic Short Codes:** The same URL always produces the same short code, making it easy to recover or reference previously generated links
+5. **QR URL Length:** Shorter URLs create simpler QR codes that are easier to scan - consider using URL shortening for better results
+6. **Prompt Engineering:** Use manual pipeline if you need custom prompts in Step 3 for better composition
+7. **Processing Time:** Each Ghibli transformation takes 40-60 seconds depending on quality
+8. **Timeout:** The API waits up to 5 minutes (300 seconds) for each transformation to complete
 
 ---
 
@@ -310,7 +388,17 @@ Final Portrait with QR Lock
 ### Manual Pipeline (3 Separate Requests)
 ```
 Original Photo → [Step 1: POST /ghibli] → Ghibli Style Person
-Profile URL → [Step 2: POST /qr-lock] → QR Lock Image
+Profile URL → [Step 2: POST /qr-lock] → QR Lock Image (with optional URL shortening)
 Ghibli Person + QR Lock → [Step 3: POST /ghibli] → Final Portrait with Lock
 ```
+
+### URL Shortening Workflow
+```
+Option 1: Standalone shortening
+GET /qr-url/?url=https://long-url.com → Short URL (https://domain.com/s/abc123)
+
+Option 2: During QR generation
+POST /qr-lock with shorten_url: true → QR Lock + Short URL data
+```
+
 **Total Processing Time:** ~90-120s
