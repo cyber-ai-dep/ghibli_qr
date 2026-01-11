@@ -79,8 +79,8 @@ async def transform2ghibli(request: Image2GhibliRequest):
                 result_urls=json.loads(webhook_result.data.resultJson)["resultUrls"],
                 model=webhook_result.data.model,
                 cost_time=webhook_result.data.costTime,
-                quality=params["quality"],
-                aspect_ratio=params["aspect_ratio"],
+                quality=params.get("quality", "basic"),
+                aspect_ratio=params.get("aspect_ratio", "1:1"),
             ),
         )
 
@@ -286,8 +286,8 @@ async def automated_pipeline(request: GhibliQRRequest):
                 result_urls=json.loads(webhook_result.data.resultJson)["resultUrls"],
                 model=webhook_result.data.model,
                 cost_time=webhook_result.data.costTime + to_ghibli_cost_time,
-                quality=params["quality"],
-                aspect_ratio=params["aspect_ratio"],
+                quality=params.get("quality", "basic"),
+                aspect_ratio=params.get("aspect_ratio", "1:1"),
             ),
         )
 

@@ -25,6 +25,31 @@ class AspectRatio(str, Enum):
     _21_9 = "21:9"
 
 
+class QwenImageSize(str, Enum):
+    """Qwen model image size options"""
+    SQUARE = "square"
+    SQUARE_HD = "square_hd"
+    PORTRAIT_4_3 = "portrait_4_3"
+    PORTRAIT_16_9 = "portrait_16_9"
+    LANDSCAPE_4_3 = "landscape_4_3"
+    LANDSCAPE_16_9 = "landscape_16_9"
+
+    @staticmethod
+    def from_aspect_ratio(aspect_ratio: 'AspectRatio') -> 'QwenImageSize':
+        """Map AspectRatio to QwenImageSize"""
+        mapping = {
+            AspectRatio._1_1: QwenImageSize.SQUARE,
+            AspectRatio._4_3: QwenImageSize.LANDSCAPE_4_3,
+            AspectRatio._3_4: QwenImageSize.PORTRAIT_4_3,
+            AspectRatio._16_9: QwenImageSize.LANDSCAPE_16_9,
+            AspectRatio._9_16: QwenImageSize.PORTRAIT_16_9,
+            AspectRatio._2_3: QwenImageSize.PORTRAIT_4_3,
+            AspectRatio._3_2: QwenImageSize.LANDSCAPE_4_3,
+            AspectRatio._21_9: QwenImageSize.LANDSCAPE_16_9,
+        }
+        return mapping.get(aspect_ratio, QwenImageSize.SQUARE)
+
+
 class Image2GhibliRequest(BaseModel):
     img_urls: ImgURLs = Field(
         ...,
