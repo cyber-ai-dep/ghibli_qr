@@ -26,4 +26,5 @@ def get_qr(url: str, version: int = None) -> Image:
     qr_img = qr_img.resize((s.QR_SIDE_LEN, s.QR_SIDE_LEN), Image.LANCZOS)
     lock_img.paste(qr_img, s.QR_PASTE_COORDINATES, qr_img)
 
-    return lock_img
+    # Convert to RGB before returning - Seedream does not accept RGBA
+    return lock_img.convert("RGB")
