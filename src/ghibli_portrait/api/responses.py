@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Generic, List, Optional, TypeVar
 
 from pydantic import BaseModel, Field
@@ -16,7 +16,7 @@ class SuccessResponse(BaseModel, Generic[T]):
 
 class HealthData(BaseModel):
     status: str = Field(default="healthy", description="Service health status")
-    timestamp: Optional[str] = Field(default=datetime.utcnow())
+    timestamp: Optional[str] = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ImageGenerationData(BaseModel):
@@ -55,104 +55,155 @@ ShortURLResponse = SuccessResponse[ShortURLData]
 # V1 API RESPONSE LAYER (Unified Envelope, camelCase)
 # ============================================================================
 
-import uuid
 from typing import Dict, Any
-from src.ghibli_portrait.models.schemas import ApiSuccessResponse, ApiErrorResponse, ApiError
+from src.ghibli_portrait.models.schemas import (
+    ApiSuccessResponse,
+    ApiErrorResponse,
+    ApiError,
+    ErrorType,
+    ErrorStage,
+)
+
+
+def _utc_timestamp() -> str:
+    """Generate ISO 8601 UTC timestamp."""
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
 def success_response(
     message: str,
     data: Optional[Dict[str, Any]] = None,
-    request_id: Optional[str] = None
 ) -> ApiSuccessResponse:
     """
     Creates a standardized V1 API success response.
 
+    Response field order: success, data, message, errors, timestamp
+
     Args:
         message: Human-readable success message
         data: Optional response payload (must be camelCase dictionary)
-        request_id: Optional request ID (auto-generated if not provided)
 
     Returns:
         ApiSuccessResponse with unified envelope structure
     """
     return ApiSuccessResponse(
         success=True,
+        data=data,
         message=message,
-        requestId=request_id or str(uuid.uuid4()),
-        data=data
+        errors=None,
+        timestamp=_utc_timestamp(),
     )
 
 
 def error_response(
     message: str,
     errors: List[ApiError],
-    request_id: Optional[str] = None
 ) -> ApiErrorResponse:
     """
     Creates a standardized V1 API error response.
 
+    Response field order: success, data, message, errors, timestamp
+
     Args:
         message: High-level error summary
-        errors: List of detailed error objects
-        request_id: Optional request ID (auto-generated if not provided)
+        errors: List of detailed error objects (must include type and stage)
 
     Returns:
         ApiErrorResponse with unified envelope structure
     """
     return ApiErrorResponse(
         success=False,
+        data=None,
         message=message,
-        requestId=request_id or str(uuid.uuid4()),
-        errors=errors
+        errors=errors,
+        timestamp=_utc_timestamp(),
     )
 
 
 def validation_error_response(
-    field: str,
+    field: Optional[str],
     message: str,
-    code: str = "VALIDATION_ERROR",
-    request_id: Optional[str] = None
+    code: str,
+    stage: ErrorStage = ErrorStage.INPUT,
+    error_type: ErrorType = ErrorType.VALIDATION_ERROR,
 ) -> ApiErrorResponse:
     """
     Helper for single validation errors.
 
     Args:
-        field: Field name that failed validation
+        field: Field name that failed validation (camelCase)
         message: Validation error message
-        code: Error code (default: VALIDATION_ERROR)
-        request_id: Optional request ID
+        code: SCREAMING_SNAKE_CASE error code
+        stage: Pipeline stage where error occurred
+        error_type: Error classification type
 
     Returns:
         ApiErrorResponse with single validation error
     """
     return error_response(
         message="Request validation failed",
-        errors=[ApiError(code=code, field=field, message=message)],
-        request_id=request_id
+        errors=[ApiError(
+            code=code,
+            type=error_type,
+            stage=stage,
+            field=field,
+            message=message
+        )],
+    )
+
+
+def external_error_response(
+    message: str,
+    code: str,
+    stage: ErrorStage,
+    detail: str,
+) -> ApiErrorResponse:
+    """
+    Helper for external API errors (KIE API failures, timeouts).
+
+    Args:
+        message: High-level error summary
+        code: SCREAMING_SNAKE_CASE error code
+        stage: Pipeline stage where error occurred
+        detail: Detailed error message
+
+    Returns:
+        ApiErrorResponse with EXTERNAL_ERROR type
+    """
+    return error_response(
+        message=message,
+        errors=[ApiError(
+            code=code,
+            type=ErrorType.EXTERNAL_ERROR,
+            stage=stage,
+            field=None,
+            message=detail
+        )],
     )
 
 
 def internal_error_response(
     message: str = "An internal error occurred",
-    request_id: Optional[str] = None
+    stage: ErrorStage = ErrorStage.ORCHESTRATION,
 ) -> ApiErrorResponse:
     """
     Helper for internal server errors.
 
     Args:
         message: Error message
-        request_id: Optional request ID
+        stage: Pipeline stage where error occurred
 
     Returns:
-        ApiErrorResponse with INTERNAL_ERROR code
+        ApiErrorResponse with SYSTEM_ERROR type
     """
     return error_response(
         message=message,
         errors=[ApiError(
             code="INTERNAL_ERROR",
+            type=ErrorType.SYSTEM_ERROR,
+            stage=stage,
             field=None,
-            message="An unexpected error occurred. Please contact support with the requestId."
+            message="An unexpected error occurred. Please try again."
         )],
-        request_id=request_id
     )

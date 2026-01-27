@@ -8,13 +8,311 @@ Transforms regular portrait photos into artistic Ghibli-style images and generat
 
 ## Key Features
 
-- ✅ **Unified V1 API** - All endpoints under `/v1/*` prefix
-- ✅ **Consistent Response Format** - `{success, message, requestId, data/errors}` for all endpoints
-- ✅ **camelCase API Surface** - Clean, JavaScript-friendly field naming
-- ✅ **Comprehensive Validation** - Multi-layer validation gate with structured error codes
-- ✅ **Explicit Model Selection** - `qwen/image-edit` and `seedream` with no fallbacks
-- ✅ **Request ID Tracking** - Unique identifier for every request
-- ✅ **Webhook-Based Async Processing** - Efficient task completion handling
+- **Unified V1 API** - All endpoints under `/v1/*` prefix
+- **Consistent Response Format** - `{success, data, message, errors, timestamp}` for all endpoints
+- **camelCase API Surface** - Clean, JavaScript-friendly field naming
+- **Comprehensive Validation** - Multi-layer validation gate with structured error codes
+- **Explicit Model Selection** - `qwen/image-edit` and `seedream` with no fallbacks
+- **Request ID Tracking** - Unique identifier for every request
+- **Webhook-Based Async Processing** - Efficient task completion handling
+
+---
+
+## High-Level Architecture
+
+The system operates as a **four-layer pipeline** with strict separation of responsibilities:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         LAYER 0: Schema Validation                       │
+│                    (Pydantic: field types, required fields)              │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      LAYER 1: Source Resolution                          │
+│            (URL format, reachability, download, content-type)            │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        LAYER 2: Image Decoding                           │
+│                  (PIL decode, format validation, integrity)              │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│              LAYER 3A: Stage 1 Validation (Human Portrait)               │
+│               (MediaPipe BlazeFace: face detection only)                 │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    STAGE 1: Ghibli Transformation                        │
+│                        (qwen/image-edit model)                           │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│              LAYER 3B: Stage 2 Validation (Input Trust)                  │
+│            (Stage 1 output is TRUSTED - minimal validation)              │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      STAGE 2: QR Composition                             │
+│                      (seedream/4.5-edit model)                           │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    LAYER 4: Orchestration & Response                     │
+│          (Coordinates stages, formats responses, handles errors)         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Stage Responsibilities
+
+| Stage | Responsibility | MUST NOT Do |
+|-------|---------------|-------------|
+| **Source Resolution** | Validate URL format, download image bytes | Interpret image content |
+| **Image Decoding** | Decode bytes to PIL Image, validate format | Apply business rules |
+| **Stage 1 (Ghibli)** | Detect human faces, generate Ghibli art | Perform QR operations |
+| **Stage 2 (QR)** | Compose Ghibli image with QR lock screen | Re-validate human faces |
+| **Orchestration** | Coordinate stages, format responses | Add new validation rules |
+
+---
+
+## Stage 1: Human Portrait Validation
+
+### Face Detection Technology
+
+Stage 1 uses **MediaPipe BlazeFace** (CPU-only) for face detection:
+
+- **Model**: `blaze_face_short_range.tflite` (auto-downloaded on first use)
+- **Runtime**: MediaPipe Tasks API (`mediapipe.tasks.python.vision.FaceDetector`)
+- **Confidence Threshold**: 0.35 minimum detection confidence
+
+**Note**: OpenCV Haar Cascade has been **fully removed** from the codebase.
+
+### Acceptance Rules
+
+The system accepts **any image containing a human face**, regardless of:
+
+| Attribute | Accepted |
+|-----------|----------|
+| Gender | Male, female, non-binary |
+| Ethnicity | All ethnicities |
+| Facial hair | Beard, mustache, clean-shaven |
+| Head covering | Hijab, turban, hat, no covering |
+| Hairstyle | Any hairstyle, bald |
+| Glasses | With or without |
+| Background | Simple or complex |
+| Background elements | Posters, logos, prints (ignored) |
+| Face size | Any size (small/distant faces accepted) |
+| Face position | Any position in frame |
+
+### Rejection Rules
+
+The system rejects images **only** in these cases:
+
+| Condition | Error Code | Description |
+|-----------|-----------|-------------|
+| No face detected | `NO_FACE_DETECTED` | MediaPipe found zero faces in the image |
+| Multiple prominent faces | `MULTIPLE_FACES` | Secondary face is ≥65% area AND ≥60% confidence of primary |
+| Detector failure | `FACE_DETECTOR_FAILURE` | MediaPipe runtime error (SYSTEM_ERROR) |
+
+### Primary Face Selection
+
+When multiple faces are detected, the **primary face** is selected by:
+
+1. **Largest bounding box area** (highest priority)
+2. **Highest confidence score**
+3. **Closest to image center** (lowest priority)
+
+### Multiple Face Logic
+
+Multiple faces are **accepted** unless the secondary face is "visually significant":
+- Secondary face area ≥ 65% of primary face area
+- Secondary face confidence ≥ 60% of primary face confidence
+
+Both conditions must be true for rejection. Background faces in posters, photos, or artwork are typically ignored because they fail one or both thresholds.
+
+---
+
+## Known Limitation: Animal vs Human Detection
+
+### Current Behavior
+
+MediaPipe BlazeFace is a **face detector**, not a **human classifier**. It detects facial structures but cannot distinguish between:
+
+- Human faces
+- Certain primate faces (e.g., monkeys, apes)
+- Realistic animal illustrations with human-like facial features
+
+**Result**: Some animal images may occasionally pass validation if they contain facial structures that match human face geometry.
+
+### Design Decision
+
+> **The system prioritizes human inclusivity over aggressive animal rejection.**
+
+This means:
+- Real human photos are **never** falsely rejected due to appearance, ethnicity, or facial features
+- Some edge-case animal images may pass validation (accepted limitation)
+
+### Why This Trade-off?
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Strict filtering** | Blocks more animals | Risk of rejecting real humans (unacceptable) |
+| **Inclusive filtering** (current) | Never rejects real humans | Some animals may pass |
+
+Rejecting a real human due to facial features is a **worse outcome** than accepting an occasional animal photo.
+
+### Future Enhancement Path
+
+A dedicated **human vs non-human classifier** could be added as an optional layer:
+
+- Run after face detection (only if face detected)
+- Use a trained image classification model
+- Return `ANIMAL_OR_CARTOON_DETECTED` only when high confidence
+- Maintain human inclusivity as the priority
+
+This is **not currently implemented** and would require careful testing to avoid false rejections.
+
+---
+
+## Stage 2: QR Composition
+
+### Behavior
+
+Stage 2 receives the **Ghibli-transformed image** from Stage 1 and composes it with a QR code lock screen.
+
+### Trust Model
+
+- **Stage 1 output is trusted** - no face detection or human validation occurs in Stage 2
+- Stage 2 only validates that the Stage 1 URL is well-formed and reachable
+- No image downloading or decoding occurs in Stage 2 validation
+
+### QR Code Integrity
+
+The QR composition model (seedream/4.5-edit) is prompted to:
+
+- Position the person holding the lock screen with both hands
+- Ensure the face and head remain visible
+- Maintain QR code scannability (no distortion or blur)
+
+---
+
+## Error Handling Philosophy
+
+### Core Principles
+
+1. **Errors are stage-scoped**: Each error includes the pipeline stage where it occurred
+2. **No silent fallbacks**: Every failure is explicitly reported with a structured error
+3. **Deterministic validation**: Same input always produces same validation result
+4. **Single source of truth**: MediaPipe is the only face detection system
+
+### Error Classification
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `VALIDATION_ERROR` | Input failed validation rules | No face detected, invalid URL |
+| `EXTERNAL_ERROR` | External API failure | KIE API error, timeout |
+| `SYSTEM_ERROR` | Internal system failure | Face detector crash |
+| `UNSUPPORTED_CASE` | Valid but unsupported input | (Reserved for future use) |
+
+### Error Stages
+
+| Stage | Scope |
+|-------|-------|
+| `INPUT` | Schema validation, URL format |
+| `SOURCE_RESOLUTION` | URL reachability, download |
+| `STAGE1_GHIBLI` | Face validation, Ghibli generation |
+| `STAGE2_QR` | QR composition |
+| `ORCHESTRATION` | Pipeline coordination |
+
+### No Mixed Responsibility
+
+- Source resolution errors are isolated from validation errors
+- Stage 1 errors never leak into Stage 2
+- Each layer handles only its designated errors
+
+---
+
+## API Contract
+
+### Unified Response Envelope
+
+All V1 endpoints return responses with this exact structure:
+
+**Success Response**
+```json
+{
+  "success": true,
+  "data": {
+    "resultUrls": ["https://..."],
+    "model": "qwen/image-edit",
+    "costTime": 12
+  },
+  "message": "Ghibli portrait generated successfully",
+  "errors": null,
+  "timestamp": "2026-01-27T12:00:00.000Z"
+}
+```
+
+**Error Response**
+```json
+{
+  "success": false,
+  "data": null,
+  "message": "Request validation failed",
+  "errors": [
+    {
+      "code": "NO_FACE_DETECTED",
+      "type": "VALIDATION_ERROR",
+      "stage": "STAGE1_GHIBLI",
+      "field": "imgUrl",
+      "message": "No human face detected. Please provide a clear portrait photo of a person."
+    }
+  ],
+  "timestamp": "2026-01-27T12:00:00.000Z"
+}
+```
+
+### Error Object Structure
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `code` | string | `SCREAMING_SNAKE_CASE` error identifier |
+| `type` | enum | `VALIDATION_ERROR`, `EXTERNAL_ERROR`, `SYSTEM_ERROR` |
+| `stage` | enum | `INPUT`, `SOURCE_RESOLUTION`, `STAGE1_GHIBLI`, `STAGE2_QR`, `ORCHESTRATION` |
+| `field` | string\|null | camelCase field name (if applicable) |
+| `message` | string | Human-readable error message |
+
+---
+
+## Swagger / API Organization
+
+### Endpoint Groups
+
+The Swagger documentation (`/docs`) organizes endpoints into these groups:
+
+| Tag | Description |
+|-----|-------------|
+| **Api Production** | Primary production endpoint (`POST /v1/ghibli-qr`) |
+| **Core APIs** | Individual transformation endpoints (`/v1/ghibli`, `/v1/qr-lock`) |
+| **Internal / System** | Webhooks and system endpoints (not for external use) |
+| **Health & Utilities** | Health checks, URL shortening |
+
+### Primary Production Endpoint
+
+For production use, the recommended endpoint is:
+
+```
+POST /v1/ghibli-qr
+```
+
+This single endpoint handles the complete pipeline:
+1. Validates input image (face detection)
+2. Transforms to Ghibli style (Stage 1)
+3. Composes with QR lock screen (Stage 2)
+4. Returns final composed image
+
+---
 
 ## Installation
 
@@ -53,7 +351,6 @@ KIE_COMPOSE_MODEL=seedream/4.5-edit
 # Validation settings:
 REQUIRE_HUMAN_FACE=true
 MAX_FACES=1
-MIN_FACE_AREA_RATIO=0.03
 SHORT_CODE_LENGTH=8
 ```
 
@@ -92,37 +389,7 @@ DOMAIN=https://your-ngrok-url.ngrok-free.dev
 
 4. **Restart server** to apply new domain
 
-## Unified Response Format
-
-All V1 endpoints return responses in this format:
-
-### Success Response
-```json
-{
-  "success": true,
-  "message": "Human-readable success message",
-  "requestId": "req_550e8400-e29b-41d4-a716-446655440000",
-  "data": {
-    // Response payload (varies by endpoint)
-  }
-}
-```
-
-### Error Response
-```json
-{
-  "success": false,
-  "message": "High-level error summary",
-  "requestId": "req_550e8400-e29b-41d4-a716-446655440000",
-  "errors": [
-    {
-      "code": "MACHINE_READABLE_CODE",
-      "field": "fieldName",
-      "message": "Human-readable error message"
-    }
-  ]
-}
-```
+---
 
 ## API Endpoints
 
@@ -150,12 +417,12 @@ curl -X GET "http://localhost:8000/v1/health"
 ```json
 {
   "success": true,
-  "message": "Ghibli Portrait API V1 is running",
-  "requestId": "req_abc123",
   "data": {
-    "status": "healthy",
-    "timestamp": "2026-01-19T12:00:00Z"
-  }
+    "status": "healthy"
+  },
+  "message": "Ghibli Portrait API V1 is running",
+  "errors": null,
+  "timestamp": "2026-01-27T12:00:00.000Z"
 }
 ```
 
@@ -185,15 +452,16 @@ curl -X GET "http://localhost:8000/v1/health"
 ```json
 {
   "success": true,
-  "message": "Ghibli portrait generated successfully",
-  "requestId": "req_550e8400",
   "data": {
     "resultUrls": ["https://tempfile.aiquickdraw.com/ghibli.png"],
     "model": "qwen/image-edit",
     "costTime": 12,
     "quality": "basic",
     "aspectRatio": "1:1"
-  }
+  },
+  "message": "Ghibli portrait generated successfully",
+  "errors": null,
+  "timestamp": "2026-01-27T12:00:00.000Z"
 }
 ```
 
@@ -230,8 +498,6 @@ curl -X POST "http://localhost:8000/v1/ghibli" \
 ```json
 {
   "success": true,
-  "message": "QR code with lock screen generated successfully",
-  "requestId": "req_abc123",
   "data": {
     "qrUrl": "https://your-domain.com/tmp/uuid.png",
     "encodedUrl": "https://example.com",
@@ -239,7 +505,10 @@ curl -X POST "http://localhost:8000/v1/ghibli" \
       "url": "https://your-domain.com/s/abc123",
       "code": "abc123"
     }
-  }
+  },
+  "message": "QR code with lock screen generated successfully",
+  "errors": null,
+  "timestamp": "2026-01-27T12:00:00.000Z"
 }
 ```
 
@@ -251,12 +520,13 @@ curl -X POST "http://localhost:8000/v1/ghibli" \
 ```json
 {
   "success": true,
-  "message": "Short URL generated successfully",
-  "requestId": "req_abc123",
   "data": {
     "url": "https://your-domain.com/s/abc123",
     "code": "abc123"
-  }
+  },
+  "message": "Short URL generated successfully",
+  "errors": null,
+  "timestamp": "2026-01-27T12:00:00.000Z"
 }
 ```
 
@@ -268,11 +538,12 @@ curl -X POST "http://localhost:8000/v1/ghibli" \
 ```json
 {
   "success": true,
-  "message": "Image deleted successfully",
-  "requestId": "req_abc123",
   "data": {
     "deletedId": "uuid-here"
-  }
+  },
+  "message": "Image deleted successfully",
+  "errors": null,
+  "timestamp": "2026-01-27T12:00:00.000Z"
 }
 ```
 
@@ -300,73 +571,74 @@ curl -X POST "http://localhost:8000/v1/ghibli" \
 ```json
 {
   "success": true,
-  "message": "Ghibli + QR pipeline completed successfully",
-  "requestId": "req_abc123",
   "data": {
     "resultUrls": ["https://tempfile.aiquickdraw.com/final.png"],
     "model": "seedream/4.5-edit",
     "costTime": 45,
     "quality": "basic",
     "aspectRatio": "1:1"
-  }
+  },
+  "message": "Ghibli + QR pipeline completed successfully",
+  "errors": null,
+  "timestamp": "2026-01-27T12:00:00.000Z"
 }
 ```
 
-**Processing Time:** 15-30 seconds for the full pipeline
+---
 
 ## Validation Policy
 
-The V1 API enforces strict image quality requirements for Ghibli endpoints:
+The V1 API enforces these validation requirements:
 
-1. **Public URL Check** ✅ Implemented
-   - URL must start with `http://` or `https://`
-   - No localhost or private IPs allowed
-   - Must be publicly accessible
+### Layer 1: Source Resolution
 
-2. **Single Image Requirement** ✅ Implemented
-   - Only one image URL allowed per request
-   - Enforced at validation layer
+- URL must start with `http://` or `https://`
+- No localhost or private IPs allowed
+- Must be publicly accessible
+- Must return valid HTTP response
 
-3. **Face Detection** ✅ Implemented
-   - At least one human face must be detected (OpenCV Haar cascade)
-   - Maximum 1 face by default (configurable via `MAX_FACES`)
-   - Minimum face size ratio enforced (configurable via `MIN_FACE_AREA_RATIO`)
+### Layer 2: Image Decoding
 
-4. **Human vs. Animal/Cartoon** 🚧 ML Stub (Ready for Integration)
-   - Prevents animal photos and cartoon/anime characters
-   - Stub implementation with detailed TODO for ML model integration
-   - Error code: `ANIMAL_OR_CARTOON_DETECTED`
+- Image must be decodable by PIL
+- Supported formats: JPEG, PNG, WebP, GIF
+- Image integrity must be valid
 
-5. **Real Photo vs. Non-Real Image** 🚧 ML Stub (Ready for Integration)
-   - Ensures input is a real photograph (not AI-generated, painting, or 3D render)
-   - Stub implementation with detailed TODO for ML model integration
-   - Error code: `NON_REAL_IMAGE_DETECTED`
+### Layer 3A: Human Portrait (Stage 1)
 
-> **Note:** ML-based validation layers (4 & 5) are implemented as stubs with clear integration points. They currently pass all images but are ready for ML model integration when required. See `src/ghibli_portrait/services/validation_service.py` for implementation details.
+- At least one human face must be detected (MediaPipe BlazeFace)
+- Maximum 1 prominent face (configurable via `MAX_FACES`)
+- Face detection uses CPU-only runtime
+
+### Layer 3B: Stage 2 Input
+
+- Stage 1 output URL must be well-formed
+- No face re-validation (Stage 1 output is trusted)
+
+---
 
 ## Error Codes Reference
 
-| Code | HTTP Status | Description |
-|------|-------------|-------------|
-| `SINGLE_IMAGE_REQUIRED` | 422 | Request must contain exactly one image URL |
-| `INVALID_IMAGE_URL` | 422 | URL is not publicly accessible or invalid format |
-| `NO_FACE_DETECTED` | 422 | No human face found in the image |
-| `MULTIPLE_FACES` | 422 | More than the allowed number of faces detected |
-| `FACE_TOO_SMALL` | 422 | Face is too small/distant in the image |
-| `IMAGE_DOWNLOAD_FAILED` | 422 | Failed to download or decode the image |
-| `ANIMAL_OR_CARTOON_DETECTED` | 422 | Image contains animal or cartoon (not real human) |
-| `NON_REAL_IMAGE_DETECTED` | 422 | Image is not a real photograph |
-| `GENERATION_API_ERROR` | 500 | External AI API returned an error |
-| `GENERATION_TASK_FAILED` | 500 | AI generation task failed on external service |
-| `STAGE1_API_ERROR` | 500 | Stage 1 (Ghibli) API error |
-| `STAGE1_TASK_FAILED` | 500 | Stage 1 (Ghibli) task failed |
-| `STAGE1_TIMEOUT` | 504 | Stage 1 exceeded 5-minute timeout |
-| `STAGE2_API_ERROR` | 500 | Stage 2 (composition) API error |
-| `STAGE2_TASK_FAILED` | 500 | Stage 2 (composition) task failed |
-| `STAGE2_TIMEOUT` | 504 | Stage 2 exceeded 5-minute timeout |
-| `WEBHOOK_TIMEOUT` | 504 | Processing exceeded 5-minute timeout |
-| `IMAGE_NOT_FOUND` | 404 | QR image not found for deletion |
-| `INTERNAL_ERROR` | 500 | Unexpected server error |
+| Code | HTTP Status | Stage | Description |
+|------|-------------|-------|-------------|
+| `SINGLE_IMAGE_REQUIRED` | 422 | INPUT | Request must contain exactly one image URL |
+| `INVALID_IMAGE_URL` | 422 | SOURCE_RESOLUTION | URL is not publicly accessible or invalid format |
+| `IMAGE_DOWNLOAD_FAILED` | 422 | SOURCE_RESOLUTION | Failed to download or decode the image |
+| `NO_FACE_DETECTED` | 422 | STAGE1_GHIBLI | No human face found in the image |
+| `MULTIPLE_FACES` | 422 | STAGE1_GHIBLI | Multiple prominent human faces detected |
+| `FACE_DETECTOR_FAILURE` | 500 | STAGE1_GHIBLI | Face detection system unavailable (SYSTEM_ERROR) |
+| `GENERATION_API_ERROR` | 500 | STAGE1_GHIBLI | External AI API returned an error |
+| `GENERATION_TASK_FAILED` | 500 | STAGE1_GHIBLI | AI generation task failed on external service |
+| `STAGE1_API_ERROR` | 500 | STAGE1_GHIBLI | Stage 1 (Ghibli) API error |
+| `STAGE1_TASK_FAILED` | 500 | STAGE1_GHIBLI | Stage 1 (Ghibli) task failed |
+| `STAGE1_TIMEOUT` | 504 | STAGE1_GHIBLI | Stage 1 exceeded 5-minute timeout |
+| `STAGE2_API_ERROR` | 500 | STAGE2_QR | Stage 2 (composition) API error |
+| `STAGE2_TASK_FAILED` | 500 | STAGE2_QR | Stage 2 (composition) task failed |
+| `STAGE2_TIMEOUT` | 504 | STAGE2_QR | Stage 2 exceeded 5-minute timeout |
+| `WEBHOOK_TIMEOUT` | 504 | varies | Processing exceeded 5-minute timeout |
+| `IMAGE_NOT_FOUND` | 404 | INPUT | QR image not found for deletion |
+| `INTERNAL_ERROR` | 500 | ORCHESTRATION | Unexpected server error |
+
+---
 
 ## Model Configuration
 
@@ -390,6 +662,8 @@ The API requires explicit model configuration. **No automatic fallback is allowe
 
 **Important:** If a model is not configured, the API will return an error. There is no fallback logic.
 
+---
+
 ## Image Hosting for Input URLs
 
 All image URLs must be publicly accessible. Recommended free hosting:
@@ -406,6 +680,8 @@ All image URLs must be publicly accessible. Recommended free hosting:
 https://i.ibb.co/2JKZ4fC/portrait.jpg
 ```
 
+---
+
 ## Configuration
 
 ### Environment Variables
@@ -418,7 +694,6 @@ https://i.ibb.co/2JKZ4fC/portrait.jpg
 | `KIE_COMPOSE_MODEL` | Yes | Stage 2 model (seedream/4.5-edit) | - |
 | `REQUIRE_HUMAN_FACE` | No | Enable face detection validation | `true` |
 | `MAX_FACES` | No | Maximum faces allowed (0 = unlimited) | `1` |
-| `MIN_FACE_AREA_RATIO` | No | Minimum face size ratio | `0.03` |
 | `SHORT_CODE_LENGTH` | No | URL shortener code length | `8` |
 
 ### Quality Options
@@ -434,6 +709,8 @@ https://i.ibb.co/2JKZ4fC/portrait.jpg
 - `16:9` - Widescreen
 - `9:16` - Vertical video
 - `2:3`, `3:2`, `21:9` - Additional options
+
+---
 
 ## Deployment
 
@@ -452,15 +729,19 @@ docker build -t ghibli-api-v1 .
 docker run -p 8000:8000 --env-file .env ghibli-api-v1
 ```
 
+---
+
 ## Tech Stack
 
 - **FastAPI** - Modern async web framework
 - **Pydantic** - Data validation with camelCase support
 - **Pillow** - Image processing for QR generation
-- **OpenCV** - Face detection validation
+- **MediaPipe** - Face detection (BlazeFace, CPU-only)
 - **KIE.ai API** - AI image generation (qwen + seedream)
 - **Webhooks** - Async task completion flow
 - **Python 3.10+** - Runtime environment
+
+---
 
 ## Development
 
@@ -472,7 +753,8 @@ src/ghibli_portrait/
 │   ├── routes.py           # V1 API endpoints (unified, /v1/*)
 │   └── responses.py        # Unified response helpers
 ├── models/
-│   └── schemas.py          # Request/response schemas (camelCase)
+│   ├── schemas.py          # Request/response schemas (camelCase)
+│   └── blaze_face_short_range.tflite  # MediaPipe model (auto-downloaded)
 ├── services/
 │   ├── image_service.py    # Image generation logic
 │   ├── qr_service.py       # QR code generation
@@ -497,11 +779,15 @@ uv run pytest
 uv run pytest --cov=src/ghibli_portrait
 ```
 
+---
+
 ## Documentation
 
 - **OpenAPI/Swagger**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
 - **OpenAPI JSON**: http://localhost:8000/openapi.json
+
+---
 
 ## License
 

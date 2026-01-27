@@ -9,6 +9,28 @@ from src.ghibli_portrait.config import Settings
 ImgURLs = List[str]
 s = Settings()
 
+
+# ============================================================================
+# ERROR CLASSIFICATION ENUMS
+# ============================================================================
+
+class ErrorType(str, Enum):
+    """Classification of error types for structured error responses."""
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    EXTERNAL_ERROR = "EXTERNAL_ERROR"
+    SYSTEM_ERROR = "SYSTEM_ERROR"
+    UNSUPPORTED_CASE = "UNSUPPORTED_CASE"
+
+
+class ErrorStage(str, Enum):
+    """Stage in the pipeline where the error occurred."""
+    INPUT = "INPUT"
+    SOURCE_RESOLUTION = "SOURCE_RESOLUTION"
+    STAGE1_GHIBLI = "STAGE1_GHIBLI"
+    STAGE2_QR = "STAGE2_QR"
+    ORCHESTRATION = "ORCHESTRATION"
+
+
 class Quality(str, Enum):
     BASIC = "basic"
     HIGH = "high"
@@ -174,23 +196,54 @@ class GhibliQRRequest(BaseModel):
 # ============================================================================
 
 class ApiError(BaseModel):
-    """Single validation or business logic error"""
-    code: str = Field(..., description="Machine-readable error code (e.g., INVALID_IMAGE_URL)")
-    field: Optional[str] = Field(None, description="Field name that caused the error (if applicable)")
-    message: str = Field(..., description="Human-readable error message")
+    """
+    Unified error structure for V1 API.
+
+    All errors MUST follow this exact structure with SCREAMING_SNAKE_CASE codes.
+    """
+    code: str = Field(
+        ...,
+        description="SCREAMING_SNAKE_CASE error code (e.g., INVALID_IMAGE_URL)"
+    )
+    type: ErrorType = Field(
+        ...,
+        description="Error classification: VALIDATION_ERROR, EXTERNAL_ERROR, SYSTEM_ERROR, UNSUPPORTED_CASE"
+    )
+    stage: ErrorStage = Field(
+        ...,
+        description="Pipeline stage: INPUT, SOURCE_RESOLUTION, STAGE1_GHIBLI, STAGE2_QR, ORCHESTRATION"
+    )
+    field: Optional[str] = Field(
+        None,
+        description="Field name that caused the error (camelCase, optional)"
+    )
+    message: str = Field(
+        ...,
+        description="Human-readable error message"
+    )
 
 
 class ApiSuccessResponse(BaseModel):
-    """V1 API unified success response envelope"""
+    """
+    V1 API unified success response envelope.
+
+    Field order is enforced: success, data, message, errors, timestamp
+    """
     success: bool = Field(True, description="Always true for success responses")
+    data: Optional[dict] = Field(None, description="Response payload (camelCase keys)")
     message: str = Field(..., description="Human-readable success message")
-    requestId: str = Field(..., description="Unique request identifier for tracing")
-    data: Optional[dict] = Field(None, description="Response payload (structure varies by endpoint)")
+    errors: None = Field(None, description="Always null on success")
+    timestamp: str = Field(..., description="ISO 8601 UTC timestamp")
 
 
 class ApiErrorResponse(BaseModel):
-    """V1 API unified error response envelope"""
+    """
+    V1 API unified error response envelope.
+
+    Field order is enforced: success, data, message, errors, timestamp
+    """
     success: bool = Field(False, description="Always false for error responses")
+    data: None = Field(None, description="Always null on error")
     message: str = Field(..., description="High-level error summary")
-    requestId: str = Field(..., description="Unique request identifier for tracing")
     errors: List[ApiError] = Field(..., description="Detailed error information")
+    timestamp: str = Field(..., description="ISO 8601 UTC timestamp")
