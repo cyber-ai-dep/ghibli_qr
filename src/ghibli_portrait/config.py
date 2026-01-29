@@ -19,6 +19,8 @@ class Settings:
     STATIC_PATH = BASE_PATH / 'static'
     LOCK_PATH = STATIC_PATH / 'lock.png'
     TMP_PATH = STATIC_PATH / 'tmp'
+    TMP_PATH.mkdir(parents=True, exist_ok=True)
+
 
     # Kie Settings
     KIE_API_KEY = os.getenv("KIE_API_KEY")
@@ -47,4 +49,13 @@ class Settings:
     # Prompts
     PROMPT_PIC_TO_GHIBLI = "Convert this image to Ghibli style art."
 
-    PROMPT_GHIBLI_LOCK = "The person is holding the lock with both hands. Ensure the face and head remain visible."
+    PROMPT_GHIBLI_LOCK = """Front-facing medium portrait. Full head visible from chin to hairline, centered with clear space above hair.
+
+Use the provided lock image exactly as-is. Do not modify, redraw, blur, distort, or cover the lock or QR code.
+
+Both hands naturally hold the lock at upper torso level, below chest and chin. Fingers grip only the sides of the lock, thumbs visible. Lock front surface remains fully visible and unobstructed.
+
+Face is the primary subject. Lock is secondary.
+
+No cropping, no missing body parts, no extra objects. """
+
