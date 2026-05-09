@@ -9,6 +9,17 @@ wheels/
 # Virtual environments
 .venv
 
+# Environment variables
 .env
 
+# Editor
+.vscode/
+
+# Logs
+*.log
+app.log
+
+# Runtime / generated files
 tmp/
+static/tmp/
+src/ghibli_portrait/static/tmp/

@@ -12,12 +12,15 @@ Swagger Tags:
 """
 
 import asyncio
+import io as _io
 import json
 from typing import Dict
 from uuid import uuid4
 
+import requests as _requests
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
+from PIL import Image as _PILImage
 
 from src.ghibli_portrait.api.responses import (
     success_response,
@@ -33,6 +36,8 @@ from src.ghibli_portrait.models.schemas import (
     Image2GhibliRequest,
     QRLockRequest,
     ApiError,
+    ApiErrorResponse,
+    ApiSuccessResponse,
     ErrorType,
     ErrorStage,
 )
@@ -82,6 +87,7 @@ s = Settings()
     tags=["Health & Utilities"],
     summary="Service health check",
     description="Returns service status and timestamp. Use for liveness/readiness probes.",
+    response_model=ApiSuccessResponse,
 )
 async def health():
     """Health check endpoint for monitoring and liveness probes."""
@@ -104,6 +110,7 @@ async def health():
         "The same URL always produces the same short code. "
         "No validation performed - works for any URL string."
     ),
+    response_model=ApiSuccessResponse,
 )
 async def get_short_url(url: str):
     """Get or generate shortened URL using deterministic hashing."""
@@ -133,6 +140,12 @@ async def get_short_url(url: str):
         f"Powered by {s.KIE_GHIBLI_MODEL}. "
         "Validation: public URL, single image, face detection, human verification."
     ),
+    response_model=ApiSuccessResponse,
+    responses={
+        422: {"model": ApiErrorResponse, "description": "Validation or business rule failure"},
+        500: {"model": ApiErrorResponse, "description": "Internal or external API error"},
+        504: {"model": ApiErrorResponse, "description": "Stage 1 timeout"},
+    },
 )
 async def transform2ghibli(request: Image2GhibliRequest):
     """
@@ -267,6 +280,11 @@ async def transform2ghibli(request: Image2GhibliRequest):
     tags=["Core APIs"],
     summary="Generate QR code with lock screen overlay",
     description="Generates a QR code image with lock screen background and optional URL shortening.",
+    response_model=ApiSuccessResponse,
+    responses={
+        422: {"model": ApiErrorResponse, "description": "Request validation failure"},
+        500: {"model": ApiErrorResponse, "description": "QR generation error"},
+    },
 )
 async def get_qr_lock(req: QRLockRequest):
     """Generate QR code with lock screen overlay."""
@@ -328,6 +346,10 @@ async def get_qr_lock(req: QRLockRequest):
         "**For KIE API use only - do not call directly.**"
     ),
     include_in_schema=True,
+    response_model=ApiSuccessResponse,
+    responses={
+        500: {"model": ApiErrorResponse, "description": "Task execution failure reported by KIE API"},
+    },
 )
 async def webhook(req: CallbackRequest):
     """
@@ -345,10 +367,20 @@ async def webhook(req: CallbackRequest):
     if req.is_failure:
         return JSONResponse(
             status_code=req.code,
-            content=req.model_dump(),
+            content=external_error_response(
+                message="Task execution failed",
+                code=req.data.failCode or "TASK_FAILED",
+                stage=ErrorStage.ORCHESTRATION,
+                detail=req.data.failMsg or req.msg,
+            ).model_dump(by_alias=True)
         )
 
-    return req
+    return JSONResponse(
+        content=success_response(
+            message="Webhook received successfully",
+            data={"taskId": req.data.taskId},
+        ).model_dump(by_alias=True)
+    )
 
 
 @router.delete(
@@ -356,6 +388,10 @@ async def webhook(req: CallbackRequest):
     tags=["Internal / System"],
     summary="Delete QR code image",
     description="Deletes a previously generated QR code image by its filename.",
+    response_model=ApiSuccessResponse,
+    responses={
+        404: {"model": ApiErrorResponse, "description": "Image not found"},
+    },
 )
 async def delete_qr_lock(img_id: str):
     """Delete a temporary QR code image."""
@@ -402,6 +438,12 @@ async def delete_qr_lock(img_id: str):
         f"Stage 1: {s.KIE_GHIBLI_MODEL}, Stage 2: {s.KIE_COMPOSE_MODEL}. "
         "Input image must be a real human portrait photo."
     ),
+    response_model=ApiSuccessResponse,
+    responses={
+        422: {"model": ApiErrorResponse, "description": "Validation or business rule failure"},
+        500: {"model": ApiErrorResponse, "description": "Internal or external API error"},
+        504: {"model": ApiErrorResponse, "description": "Stage timeout"},
+    },
 )
 async def automated_pipeline(request: GhibliQRRequest):
     """
@@ -470,11 +512,15 @@ async def automated_pipeline(request: GhibliQRRequest):
         task_id_1 = res["data"]["taskId"]
         future = asyncio.get_event_loop().create_future()
 
-        # Generate QR code while waiting for Stage 1 (parallel optimization)
+        # Generate QR code while waiting for Stage 1 (parallel optimization).
+        # Resize to max 1024px and save as JPEG — the full-size 2304×1728 PNG
+        # was timing out when KIE Stage 2 tried to download it over the tunnel.
         img = get_qr(request.url)
-        filename = f"{uuid4()}.png"
+        if max(img.size) > 1024:
+            img.thumbnail((1024, 1024), _PILImage.LANCZOS)
+        filename = f"{uuid4()}.jpg"
         filepath = s.TMP_PATH / filename
-        img.save(filepath)
+        img.save(filepath, format="JPEG", quality=92, optimize=True)
         qr_lock_url_path = s.DOMAIN + "/tmp/" + filename
 
         pending_tasks[task_id_1] = future
@@ -525,10 +571,39 @@ async def automated_pipeline(request: GhibliQRRequest):
             )
 
         # =====================================================================
-        # STAGE 2: Compose Ghibli + QR lock (seedream)
-        # Pass Stage 1 URL directly - NO download, NO decode, NO validation
+        # RE-HOST Stage 1 output on our server before passing to Stage 2.
+        # The Qwen CDN URL (tempfile.aiquickdraw.com) is temporary and often
+        # times out when Seedream tries to pull it cross-service.
+        # We also resize to max 1024px and save as JPEG so the file is small
+        # enough for KIE's download to complete within their internal timeout
+        # window (large PNG over a tunneled connection was timing out mid-stream
+        # even when our server returned 200 OK).
         # =====================================================================
-        res = generate_img([ghibli_url, qr_lock_url_path], s.PROMPT_GHIBLI_LOCK, model=s.KIE_COMPOSE_MODEL)
+        try:
+            ghibli_resp = _requests.get(
+                ghibli_url, timeout=60, headers={"User-Agent": "ghibli-qr/0.1"}
+            )
+            ghibli_resp.raise_for_status()
+            ghibli_img = _PILImage.open(_io.BytesIO(ghibli_resp.content)).convert("RGB")
+            if max(ghibli_img.size) > 1024:
+                ghibli_img.thumbnail((1024, 1024), _PILImage.LANCZOS)
+            ghibli_filename = f"{uuid4()}.jpg"
+            ghibli_filepath = s.TMP_PATH / ghibli_filename
+            ghibli_img.save(ghibli_filepath, format="JPEG", quality=92, optimize=True)
+            ghibli_local_url = s.DOMAIN + "/tmp/" + ghibli_filename
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content=internal_error_response(
+                    message=f"Failed to re-host Stage 1 output: {str(e)}",
+                    stage=ErrorStage.STAGE2_QR,
+                ).model_dump(by_alias=True)
+            )
+
+        # =====================================================================
+        # STAGE 2: Compose Ghibli + QR lock (seedream)
+        # =====================================================================
+        res = generate_img([ghibli_local_url, qr_lock_url_path], s.PROMPT_GHIBLI_LOCK, model=s.KIE_COMPOSE_MODEL)
         if res["code"] != 200:
             return JSONResponse(
                 status_code=500,

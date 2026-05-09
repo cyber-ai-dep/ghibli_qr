@@ -11,9 +11,12 @@ class Settings:
     QR_VERSION = 1 # Ranges from 1 - 40
     QR_FILL_COLOR = "white"
     QR_BACK_COLOR = "#2a2d42"
-    QR_PASTE_COORDINATES = (817, 795)
-    QR_SIDE_LEN = 685
-    QR_SHORT_CODE_LENGTH = int(os.getenv('SHORT_CODE_LENGTH', 8))  
+    QR_SHORT_CODE_LENGTH = int(os.getenv('SHORT_CODE_LENGTH', 8))
+
+    # QR lock proportional sizing ratios (relative to the lock image width)
+    QR_LOCK_TARGET_WIDTH_RATIO = 0.28
+    QR_LOCK_MIN_WIDTH_RATIO = 0.22
+    QR_LOCK_MAX_WIDTH_RATIO = 0.32
 
     BASE_PATH = Path(__file__).parent.parent
     STATIC_PATH = BASE_PATH / 'static'
@@ -45,6 +48,16 @@ class Settings:
     MIN_FACE_AREA_RATIO = float(os.getenv("MIN_FACE_AREA_RATIO", "0.03"))
 
     # Prompts
-    PROMPT_PIC_TO_GHIBLI = "Convert this image to Ghibli style art."
+    PROMPT_PIC_TO_GHIBLI = (
+        "Convert this portrait into Studio Ghibli style art. Use soft watercolor backgrounds, "
+        "warm pastel colors, clean ink outlines, expressive eyes, and painterly lighting. "
+        "Preserve the person's face, clothing, and pose exactly. Make it look like a polished "
+        "animated movie frame, not a photo filter."
+    )
 
-    PROMPT_GHIBLI_LOCK = "The person is holding the lock with both hands. Ensure the face and head remain visible."
+    PROMPT_GHIBLI_LOCK = (
+        "The person is holding a colorful lock-shaped QR sign with both hands at torso level. "
+        "Keep the Studio Ghibli animated illustration style throughout. Ensure the face and head "
+        "remain clearly visible and unobstructed. The QR code must stay sharp, high-contrast, "
+        "square, and scannable."
+    )
