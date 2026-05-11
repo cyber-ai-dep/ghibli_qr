@@ -5,7 +5,7 @@ This module implements Layer 4 (Orchestration) of the validation architecture.
 It coordinates validation layers and stages without adding new validation rules.
 
 Swagger Tags:
-- Api Production: Primary production endpoint (POST /v1/ghibli-qr)
+- API Production: Primary production endpoint (POST /v1/ghibli-qr)
 - Core APIs: Core transformation endpoints
 - Internal / System: Internal webhooks and system endpoints
 - Health & Utilities: Health checks and utility endpoints
@@ -434,7 +434,7 @@ async def delete_qr_lock(img_id: str):
 
 @router.post(
     "/ghibli-qr",
-    tags=["Api Production"],
+    tags=["API Production"],
     summary="Ghibli + QR Pipeline (Production Endpoint)",
     description=(
         "**Primary production endpoint.** "
@@ -458,7 +458,7 @@ async def automated_pipeline(request: GhibliQRRequest):
     - Does NOT add new validation rules
     - Does NOT reinterpret errors from lower layers
 
-    Models: qwen/image-edit (stage 1), seedream (stage 2) - both explicit, no fallback.
+    Models: KIE_GHIBLI_MODEL (stage 1), KIE_COMPOSE_MODEL (stage 2) - both explicit, no fallback.
     """
     task_id_1 = ''
     task_id_2 = ''
