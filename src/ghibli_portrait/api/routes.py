@@ -428,10 +428,6 @@ async def delete_qr_lock(img_id: str):
     )
 
 
-# ============================================================================
-# API PRODUCTION (Primary Endpoint)
-# ============================================================================
-
 @router.post(
     "/ghibli-qr",
     tags=["API Production"],
@@ -460,13 +456,13 @@ async def automated_pipeline(request: GhibliQRRequest):
 
     Models: KIE_GHIBLI_MODEL (stage 1), KIE_COMPOSE_MODEL (stage 2) - both explicit, no fallback.
     """
-    task_id_1 = ''
-    task_id_2 = ''
+    task_id_1 = ""
+    task_id_2 = ""
 
     try:
-        # Layer 0: Schema validation (handled by Pydantic)
-
-        # Layers 1, 2, 3A: Comprehensive validation for user input
+        # ---------------------------------------------------------------------
+        # Layers 1,2,3A: validate user input image (real human portrait)
+        # ---------------------------------------------------------------------
         validation_result = validate_real_human_image(request.img_url, settings=s)
         if not validation_result.ok:
             return JSONResponse(
@@ -477,17 +473,19 @@ async def automated_pipeline(request: GhibliQRRequest):
                     code=validation_result.code,
                     stage=validation_result.stage,
                     error_type=validation_result.error_type,
-                ).model_dump(by_alias=True)
+                ).model_dump(by_alias=True),
             )
 
+        # ---------------------------------------------------------------------
         # Configuration checks
+        # ---------------------------------------------------------------------
         if not s.KIE_GHIBLI_MODEL:
             return JSONResponse(
                 status_code=500,
                 content=internal_error_response(
                     message="KIE_GHIBLI_MODEL not configured",
                     stage=ErrorStage.ORCHESTRATION,
-                ).model_dump(by_alias=True)
+                ).model_dump(by_alias=True),
             )
 
         if not s.KIE_COMPOSE_MODEL:
@@ -496,11 +494,11 @@ async def automated_pipeline(request: GhibliQRRequest):
                 content=internal_error_response(
                     message="KIE_COMPOSE_MODEL not configured",
                     stage=ErrorStage.ORCHESTRATION,
-                ).model_dump(by_alias=True)
+                ).model_dump(by_alias=True),
             )
 
         # =====================================================================
-        # STAGE 1: Generate Ghibli portrait (qwen/image-edit)
+        # STAGE 1: Generate Ghibli portrait
         # =====================================================================
         res = generate_img(
             [request.img_url],
@@ -516,7 +514,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                     code="STAGE1_API_ERROR",
                     stage=ErrorStage.STAGE1_GHIBLI,
                     detail=res.get("msg", "External API error"),
-                ).model_dump(by_alias=True)
+                ).model_dump(by_alias=True),
             )
 
         task_id_1 = res["data"]["taskId"]
@@ -533,10 +531,15 @@ async def automated_pipeline(request: GhibliQRRequest):
         img.save(filepath, format="JPEG", quality=92, optimize=True)
         qr_lock_url_path = s.DOMAIN + "/tmp/" + filename
 
-        pending_tasks[task_id_1] = future
+        # Generate QR lock image while Stage 1 runs (parallel optimization)
+        qr_img = get_qr(request.url)
+        qr_filename = f"{uuid4()}.png"
+        qr_filepath = s.TMP_PATH / qr_filename
+        qr_img.save(qr_filepath)
+        qr_lock_url_path = s.DOMAIN + "/tmp/" + qr_filename
 
         try:
-            webhook_result = await asyncio.wait_for(future, timeout=300)
+            webhook_result_1: CallbackRequest = await asyncio.wait_for(future_1, timeout=600)
         except asyncio.TimeoutError:
             pending_tasks.pop(task_id_1, None)
             return JSONResponse(
@@ -546,20 +549,20 @@ async def automated_pipeline(request: GhibliQRRequest):
                     code="STAGE1_TIMEOUT",
                     stage=ErrorStage.STAGE1_GHIBLI,
                     detail=f"Stage 1 timed out after 5 minutes (taskId: {task_id_1})",
-                ).model_dump(by_alias=True)
+                ).model_dump(by_alias=True),
             )
         finally:
             pending_tasks.pop(task_id_1, None)
 
-        if webhook_result.is_failure:
+        if webhook_result_1.is_failure:
             return JSONResponse(
                 status_code=500,
                 content=external_error_response(
                     message="Stage 1 task failed",
                     code="STAGE1_TASK_FAILED",
                     stage=ErrorStage.STAGE1_GHIBLI,
-                    detail=webhook_result.data.failMsg or webhook_result.msg,
-                ).model_dump(by_alias=True)
+                    detail=webhook_result_1.data.failMsg or webhook_result_1.msg,
+                ).model_dump(by_alias=True),
             )
 
         # Extract Stage 1 output URL — handles both Qwen (resultUrls[]) and Flux Kontext (info.resultImageUrl)
@@ -567,10 +570,9 @@ async def automated_pipeline(request: GhibliQRRequest):
         ghibli_url = _s1_urls[0] if _s1_urls else None
         to_ghibli_cost_time = webhook_result.data.costTime
 
-        # =====================================================================
-        # LAYER 3B: Stage 2 input validation
-        # CRITICAL: Stage 1 output is TRUSTED - NO reprocessing
-        # =====================================================================
+        # ---------------------------------------------------------------------
+        # Layer 3B: validate Stage 2 input (Stage 1 output is trusted; this is a gate)
+        # ---------------------------------------------------------------------
         stage2_validation = validate_stage2_input(ghibli_url)
         if not stage2_validation.ok:
             return JSONResponse(
@@ -578,7 +580,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                 content=internal_error_response(
                     message=stage2_validation.message,
                     stage=ErrorStage.STAGE2_QR,
-                ).model_dump(by_alias=True)
+                ).model_dump(by_alias=True),
             )
 
         # =====================================================================
@@ -679,51 +681,98 @@ async def automated_pipeline(request: GhibliQRRequest):
                     detail=res.get("msg", "External API error"),
                 ).model_dump(by_alias=True)
             )
+            if res2.get("code") != 200:
+                return JSONResponse(
+                    status_code=500,
+                    content=external_error_response(
+                        message="Stage 2 (composition) API error",
+                        code="STAGE2_API_ERROR",
+                        stage=ErrorStage.STAGE2_QR,
+                        detail=res2.get("msg", "External API error"),
+                    ).model_dump(by_alias=True),
+                )
 
-        task_id_2 = res["data"]["taskId"]
-        future = asyncio.get_event_loop().create_future()
-        pending_tasks[task_id_2] = future
+            task_id_2 = res2["data"]["taskId"]
+            future_2 = asyncio.get_event_loop().create_future()
+            pending_tasks[task_id_2] = future_2
 
-        try:
-            webhook_result = await asyncio.wait_for(future, timeout=300)
-        except asyncio.TimeoutError:
-            pending_tasks.pop(task_id_2, None)
-            return JSONResponse(
-                status_code=504,
-                content=external_error_response(
-                    message="Stage 2 timeout",
-                    code="STAGE2_TIMEOUT",
-                    stage=ErrorStage.STAGE2_QR,
-                    detail=f"Stage 2 timed out after 5 minutes (taskId: {task_id_2})",
-                ).model_dump(by_alias=True)
+            try:
+                webhook_result_2: CallbackRequest = await asyncio.wait_for(future_2, timeout=600)
+            except asyncio.TimeoutError:
+                pending_tasks.pop(task_id_2, None)
+                return JSONResponse(
+                    status_code=504,
+                    content=external_error_response(
+                        message="Stage 2 timeout",
+                        code="STAGE2_TIMEOUT",
+                        stage=ErrorStage.STAGE2_QR,
+                        detail=f"Stage 2 timed out after 5 minutes (taskId: {task_id_2})",
+                    ).model_dump(by_alias=True),
+                )
+            finally:
+                pending_tasks.pop(task_id_2, None)
+
+            if webhook_result_2.is_failure:
+                return JSONResponse(
+                    status_code=500,
+                    content=external_error_response(
+                        message="Stage 2 task failed",
+                        code="STAGE2_TASK_FAILED",
+                        stage=ErrorStage.STAGE2_QR,
+                        detail=webhook_result_2.data.failMsg or webhook_result_2.msg,
+                    ).model_dump(by_alias=True),
+                )
+
+            last_webhook_result_2 = webhook_result_2
+            last_params = json.loads(json.loads(webhook_result_2.data.param)["input"])
+            last_result_urls = json.loads(webhook_result_2.data.resultJson)["resultUrls"]
+            final_image_url = last_result_urls[0]
+
+            # QR VALIDATION (expects payload == request.url)
+            qr_validation = validate_qr_from_image_url(
+                image_url=final_image_url,
+                expected_payload=request.url,
             )
-        finally:
-            pending_tasks.pop(task_id_2, None)
+            last_qr_validation = qr_validation
 
-        if webhook_result.is_failure:
-            return JSONResponse(
-                status_code=500,
-                content=external_error_response(
-                    message="Stage 2 task failed",
-                    code="STAGE2_TASK_FAILED",
-                    stage=ErrorStage.STAGE2_QR,
-                    detail=webhook_result.data.failMsg or webhook_result.msg,
-                ).model_dump(by_alias=True)
-            )
+            # ✅ success: stop
+            if qr_validation.ok:
+                break
 
-        # Success: Return final composed image
-        params = json.loads(json.loads(webhook_result.data.param)["input"])
-        result_urls = json.loads(webhook_result.data.resultJson)["resultUrls"]
+            # ✅ retry only when payload not detected at all (QR missing / not scannable)
+            if (
+                qr_validation.detected_payload is None
+                and qr_validation.reason == "no valid qr payload detected in merged image"
+                and attempt < 3
+            ):
+                continue
+
+            # ❌ any other failure (wrong payload, etc) -> do not retry
+            break
+
+        qr_validation_data = {
+            "ok": bool(last_qr_validation.ok) if last_qr_validation else False,
+            "expectedPayload": request.url,
+            "detectedPayload": last_qr_validation.detected_payload if last_qr_validation else None,
+            "reason": last_qr_validation.reason if last_qr_validation else "qr validation did not run",
+        }
+
+        stage2_cost = last_webhook_result_2.data.costTime if last_webhook_result_2 else 0
 
         return JSONResponse(
             content=success_response(
-                message="Ghibli + QR pipeline completed successfully",
+                message=(
+                    "Ghibli + QR pipeline completed successfully"
+                    if last_qr_validation and last_qr_validation.ok
+                    else "Ghibli + QR pipeline completed, but QR validation failed"
+                ),
                 data={
-                    "resultUrls": result_urls,
-                    "model": webhook_result.data.model,
-                    "costTime": webhook_result.data.costTime + to_ghibli_cost_time,
-                    "quality": params.get("quality", "basic"),
-                    "aspectRatio": params.get("aspect_ratio", "1:1"),
+                    "resultUrls": last_result_urls,  # ✅ ALWAYS RETURNED
+                    "model": last_webhook_result_2.data.model if last_webhook_result_2 else None,
+                    "costTime": stage1_cost + stage2_cost,
+                    "quality": last_params.get("quality", "basic") if last_params else "basic",
+                    "aspectRatio": last_params.get("aspect_ratio", "1:1") if last_params else "1:1",
+                    "qrValidation": qr_validation_data,  # ✅ NEW
                 },
             ).model_dump(by_alias=True)
         )
@@ -734,5 +783,5 @@ async def automated_pipeline(request: GhibliQRRequest):
             content=internal_error_response(
                 message=f"Unexpected error: {str(e)}",
                 stage=ErrorStage.ORCHESTRATION,
-            ).model_dump(by_alias=True)
+            ).model_dump(by_alias=True),
         )
