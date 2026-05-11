@@ -127,13 +127,18 @@ class TaskData(BaseModel):
     failMsg: Optional[str] = Field(None, description="Error message (failure only)")
     
     def get_result_urls(self) -> Optional[List[str]]:
-        if self.resultJson:
-            try:
-                result = json.loads(self.resultJson)
-                return result.get("resultUrls", [])
-            except json.JSONDecodeError:
-                return None
-        return None
+        if not self.resultJson:
+            return None
+        try:
+            result = json.loads(self.resultJson)
+            # Standard KIE format used by Qwen, Seedream, etc.
+            if "resultUrls" in result:
+                return result["resultUrls"]
+            # Flux Kontext format: {"info": {"resultImageUrl": "..."}}
+            url = result.get("info", {}).get("resultImageUrl")
+            return [url] if url else []
+        except json.JSONDecodeError:
+            return None
 
 
 class CallbackRequest(BaseModel):

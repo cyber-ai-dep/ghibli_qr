@@ -41,6 +41,7 @@ from src.ghibli_portrait.models.schemas import (
     ErrorType,
     ErrorStage,
 )
+from src.ghibli_portrait.services.identity_check import check_identity_drift_from_url
 from src.ghibli_portrait.services.image_service import generate_img
 from src.ghibli_portrait.services.qr_service import get_qr
 from src.ghibli_portrait.services.validation_service import (
@@ -226,9 +227,13 @@ async def transform2ghibli(request: Image2GhibliRequest):
                     ).model_dump(by_alias=True)
                 )
 
-            # Parse result
-            params = json.loads(json.loads(webhook_result.data.param)["input"])
-            result_urls = json.loads(webhook_result.data.resultJson)["resultUrls"]
+            # Parse result — param wrapper differs by model (Qwen nests under "input", Flux Kontext is flat)
+            try:
+                _param_raw = json.loads(webhook_result.data.param)
+                params = json.loads(_param_raw["input"]) if "input" in _param_raw else _param_raw
+            except Exception:
+                params = {}
+            result_urls = webhook_result.data.get_result_urls() or []
 
             return JSONResponse(
                 content=success_response(
@@ -497,7 +502,12 @@ async def automated_pipeline(request: GhibliQRRequest):
         # =====================================================================
         # STAGE 1: Generate Ghibli portrait (qwen/image-edit)
         # =====================================================================
-        res = generate_img([request.img_url], s.PROMPT_PIC_TO_GHIBLI, model=s.KIE_GHIBLI_MODEL)
+        res = generate_img(
+            [request.img_url],
+            s.PROMPT_PIC_TO_GHIBLI,
+            model=s.KIE_GHIBLI_MODEL,
+            negative_prompt=s.NEGATIVE_PROMPT_PIC_TO_GHIBLI,
+        )
         if res["code"] != 200:
             return JSONResponse(
                 status_code=500,
@@ -552,8 +562,9 @@ async def automated_pipeline(request: GhibliQRRequest):
                 ).model_dump(by_alias=True)
             )
 
-        # Extract Stage 1 output URL
-        ghibli_url = json.loads(webhook_result.data.resultJson)["resultUrls"][0]
+        # Extract Stage 1 output URL — handles both Qwen (resultUrls[]) and Flux Kontext (info.resultImageUrl)
+        _s1_urls = webhook_result.data.get_result_urls() or []
+        ghibli_url = _s1_urls[0] if _s1_urls else None
         to_ghibli_cost_time = webhook_result.data.costTime
 
         # =====================================================================
@@ -599,6 +610,60 @@ async def automated_pipeline(request: GhibliQRRequest):
                     stage=ErrorStage.STAGE2_QR,
                 ).model_dump(by_alias=True)
             )
+
+        # =====================================================================
+        # IDENTITY DRIFT GUARD (controlled by ENABLE_IDENTITY_CHECK env var)
+        # Disabled by default — qwen/image-edit always triggers skin_tone_drift.
+        # Re-enable once a proper img2img model (flux-kontext-pro) is active.
+        # =====================================================================
+        identity_result = check_identity_drift_from_url(request.img_url, ghibli_img) if s.ENABLE_IDENTITY_CHECK else None
+        if s.ENABLE_IDENTITY_CHECK and identity_result.drift_detected:
+            retry_accepted = False
+            retry_res = generate_img(
+                [request.img_url],
+                s.PROMPT_PIC_TO_GHIBLI,
+                model=s.KIE_GHIBLI_MODEL,
+                negative_prompt=s.NEGATIVE_PROMPT_PIC_TO_GHIBLI,
+            )
+            if retry_res["code"] == 200:
+                task_id_retry = retry_res["data"]["taskId"]
+                retry_future = asyncio.get_event_loop().create_future()
+                pending_tasks[task_id_retry] = retry_future
+                try:
+                    retry_webhook = await asyncio.wait_for(retry_future, timeout=300)
+                    if not retry_webhook.is_failure:
+                        _retry_urls = retry_webhook.data.get_result_urls() or []
+                        retry_url = _retry_urls[0] if _retry_urls else None
+                        retry_resp = _requests.get(
+                            retry_url, timeout=60, headers={"User-Agent": "ghibli-qr/0.1"}
+                        )
+                        retry_resp.raise_for_status()
+                        retry_img = _PILImage.open(_io.BytesIO(retry_resp.content)).convert("RGB")
+                        if max(retry_img.size) > 1024:
+                            retry_img.thumbnail((1024, 1024), _PILImage.LANCZOS)
+                        retry_filename = f"{uuid4()}.jpg"
+                        (s.TMP_PATH / retry_filename).parent.mkdir(parents=True, exist_ok=True)
+                        retry_img.save(s.TMP_PATH / retry_filename, format="JPEG", quality=92, optimize=True)
+                        retry_identity = check_identity_drift_from_url(request.img_url, retry_img)
+                        if not retry_identity.drift_detected:
+                            ghibli_local_url = s.DOMAIN + "/tmp/" + retry_filename
+                            to_ghibli_cost_time += retry_webhook.data.costTime
+                            retry_accepted = True
+                except (asyncio.TimeoutError, Exception):
+                    pass
+                finally:
+                    pending_tasks.pop(task_id_retry, None)
+
+            if not retry_accepted:
+                return JSONResponse(
+                    status_code=500,
+                    content=external_error_response(
+                        message="Stage 1 could not preserve the subject's identity",
+                        code="IDENTITY_DRIFT_DETECTED",
+                        stage=ErrorStage.STAGE1_GHIBLI,
+                        detail=f"Identity drift: {identity_result.reason if identity_result else 'unknown'}",
+                    ).model_dump(by_alias=True)
+                )
 
         # =====================================================================
         # STAGE 2: Compose Ghibli + QR lock (seedream)

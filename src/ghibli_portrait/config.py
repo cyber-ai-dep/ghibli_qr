@@ -28,9 +28,11 @@ class Settings:
     # Backward-compat single model (legacy)
     KIE_IMG_MODEL = os.getenv("KIE_IMG_MODEL")
 
-    # Preferred split-model configuration
-    # - Qwen for Stage 1: generate ghibli portrait
-    # - Seedream for Stage 2: compose/edit final output
+    # Stage 1 model — recommended: flux-kontext-pro (subject-consistent style transfer)
+    #   flux-kontext-pro  — balanced quality + speed, preserves subject identity
+    #   flux-kontext-max  — highest quality, slower
+    #   qwen/image-edit   — legacy fallback, known to drift identity
+    # Stage 2 model — seedream handles multi-image composition (QR lock overlay)
     KIE_GHIBLI_MODEL = os.getenv("KIE_GHIBLI_MODEL", KIE_IMG_MODEL)
     KIE_COMPOSE_MODEL = os.getenv("KIE_COMPOSE_MODEL", KIE_IMG_MODEL)
     KIE_CREATE_TASK_API = 'https://api.kie.ai/api/v1/jobs/createTask'
@@ -47,12 +49,57 @@ class Settings:
     # Minimum face area ratio (face_bbox_area / image_area). Helps reject tiny/far faces.
     MIN_FACE_AREA_RATIO = float(os.getenv("MIN_FACE_AREA_RATIO", "0.03"))
 
+    # Enable post-generation identity drift check. Disable when using a model that
+    # consistently triggers false positives (e.g. qwen/image-edit with Ghibli style).
+    # Re-enable once a proper img2img model (e.g. flux-kontext-pro) is configured.
+    ENABLE_IDENTITY_CHECK = os.getenv("ENABLE_IDENTITY_CHECK", "false").lower() in {"1", "true", "yes"}
+
+    # Stage 1 fidelity controls — maximize identity preservation.
+    # Passed to the model if supported; silently ignored otherwise.
+    STAGE1_IMAGE_STRENGTH = 0.35      # Low = closer to source (less transformation)
+    STAGE1_DENOISE = 0.30             # Low denoising preserves original structure
+    STAGE1_FIDELITY = 0.95            # High fidelity to reference image
+    STAGE1_REFERENCE_STRENGTH = 0.95  # Max reference/guidance strength
+    # Qwen-specific generation quality controls
+    STAGE1_GUIDANCE_SCALE = float(os.getenv("STAGE1_GUIDANCE_SCALE", "3.0"))
+    STAGE1_NUM_INFERENCE_STEPS = int(os.getenv("STAGE1_NUM_INFERENCE_STEPS", "30"))
+
     # Prompts
     PROMPT_PIC_TO_GHIBLI = (
-        "Convert this portrait into Studio Ghibli style art. Use soft watercolor backgrounds, "
-        "warm pastel colors, clean ink outlines, expressive eyes, and painterly lighting. "
-        "Preserve the person's face, clothing, and pose exactly. Make it look like a polished "
-        "animated movie frame, not a photo filter."
+        "Transform this EXACT input image into Studio Ghibli style.\n\n"
+        "STRICT RULES:\n"
+        "Preserve the exact same person.\n"
+        "Preserve exact identity.\n"
+        "Preserve exact face structure.\n"
+        "Preserve exact skin tone.\n"
+        "Preserve exact ethnicity.\n"
+        "Preserve exact race.\n"
+        "Preserve exact hairstyle.\n"
+        "Preserve exact facial hair.\n"
+        "Preserve exact expression.\n"
+        "Preserve exact clothing.\n"
+        "Preserve exact pose.\n"
+        "Preserve exact hands.\n"
+        "Preserve exact background.\n"
+        "Preserve exact composition.\n\n"
+        "ONLY change artistic style to hand-drawn Studio Ghibli illustration.\n\n"
+        "DO NOT redesign the character.\n"
+        "DO NOT replace the face.\n"
+        "DO NOT beautify.\n"
+        "DO NOT make anime generic face.\n"
+        "DO NOT lighten skin.\n"
+        "DO NOT darken skin.\n"
+        "DO NOT change ethnicity.\n"
+        "DO NOT change race.\n"
+        "DO NOT alter facial proportions.\n\n"
+        "Output must be the SAME person, only in Ghibli style."
+    )
+
+    # Negative prompt for Stage 1 — passed when the model supports it.
+    NEGATIVE_PROMPT_PIC_TO_GHIBLI = (
+        "generic anime face, identity drift, race change, skin tone change, beautification, "
+        "face replacement, facial simplification, cartoon redesign, different person, "
+        "altered ethnicity, altered hairstyle, altered expression"
     )
 
     PROMPT_GHIBLI_LOCK = (
