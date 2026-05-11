@@ -61,27 +61,36 @@ class Settings:
     STAGE1_FIDELITY = 0.95            # High fidelity to reference image
     STAGE1_REFERENCE_STRENGTH = 0.95  # Max reference/guidance strength
     # Qwen-specific generation quality controls
-    STAGE1_GUIDANCE_SCALE = float(os.getenv("STAGE1_GUIDANCE_SCALE", "3.0"))
-    STAGE1_NUM_INFERENCE_STEPS = int(os.getenv("STAGE1_NUM_INFERENCE_STEPS", "30"))
+    STAGE1_GUIDANCE_SCALE = float(os.getenv("STAGE1_GUIDANCE_SCALE", "4.0"))
+    STAGE1_NUM_INFERENCE_STEPS = int(os.getenv("STAGE1_NUM_INFERENCE_STEPS", "28"))
+    STAGE1_ACCELERATION = os.getenv("STAGE1_ACCELERATION", "none")
+    # Output stability — fixed seed and format for consistent results
+    KIE_SEED = int(os.getenv("KIE_SEED", "42"))
+    KIE_OUTPUT_FORMAT = os.getenv("KIE_OUTPUT_FORMAT", "jpeg")
+    KIE_IMAGE_SIZE = os.getenv("KIE_IMAGE_SIZE", "square")
 
     # Prompts
     PROMPT_PIC_TO_GHIBLI = (
-        "Convert this image to Ghibli style art  ,"  
-        "Use a clean solid background RGB(238, 240, 248) "
-
+        "Transform this portrait into a gentle Studio Ghibli style illustration. "
+        "Faithfully preserve the person's exact face features, skin tone, face shape, hairstyle, and expression. "
+        "Apply only light Ghibli stylization: clean soft lines, smooth skin — absolutely no heavy anime exaggeration. "
+        "Flat solid background color RGB(238, 240, 248). "
+        "No shadows, no gradients, no scenery, no patterns, no background elements."
     )
 
     # Negative prompt for Stage 1 — passed when the model supports it.
     NEGATIVE_PROMPT_PIC_TO_GHIBLI = (
         "generic anime face, identity drift, race change, skin tone change, beautification, "
         "face replacement, facial simplification, cartoon redesign, different person, "
-        "altered ethnicity, altered hairstyle, altered expression"
+        "altered ethnicity, altered hairstyle, altered expression, "
+        "gradient background, colored background, scenery, landscape, sky, outdoors, "
+        "shadows, gradients, patterns, decorative background, background objects"
     )
 
     PROMPT_GHIBLI_LOCK = (
         "The person is holding a colorful lock-shaped QR sign with both hands at torso level. "
         "Keep the Studio Ghibli animated illustration style throughout. Ensure the face and head "
         "remain clearly visible and unobstructed. The QR code must stay sharp, high-contrast, "
-        "square, and scannable."
-        "Use a clean solid background RGB(238, 240, 248) "
+        "square, and scannable. "
+        "Flat solid background color RGB(238, 240, 248). No shadows, no gradients, no scenery."
     )

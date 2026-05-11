@@ -1,3 +1,7 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -9,7 +13,18 @@ from src.ghibli_portrait.models.schemas import ApiError, ErrorStage, ErrorType
 
 s = Settings()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Expand thread pool for CPU-bound work (MediaPipe face detection, PIL).
+    # Default is min(32, cpu+4) — insufficient when many requests run concurrently.
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=100))
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Ghibli Portrait API V1",
     description="Production-ready Ghibli portrait transformation API with unified response format",
     version="1.0.0"

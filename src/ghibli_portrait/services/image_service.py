@@ -1,10 +1,16 @@
-import requests
+import json
+import logging
+
+import httpx
 
 from src.ghibli_portrait.config import Settings
-from src.ghibli_portrait.models.schemas import AspectRatio, Quality, ImgURLs, QwenImageSize
+from src.ghibli_portrait.models.schemas import AspectRatio, Quality, ImgURLs
+
+_log = logging.getLogger(__name__)
+_settings = Settings()
 
 
-def generate_img(
+async def generate_img(
     img_urls: ImgURLs,
     prompt: str,
     aspect_ratio: AspectRatio = AspectRatio._1_1,
@@ -12,8 +18,8 @@ def generate_img(
     model: str | None = None,
     negative_prompt: str | None = None,
 ) -> dict:
-    s = Settings()
-    header = {
+    s = _settings
+    headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {s.KIE_API_KEY}",
     }
@@ -26,9 +32,7 @@ def generate_img(
     is_qwen_model = chosen_model.startswith("qwen/")
 
     if is_flux_kontext:
-        # Flux Kontext fields go under KIE's standard "input" wrapper.
-        # Designed for subject-consistent image editing — preserves identity while restyling.
-        # Does NOT support negative_prompt.
+        # Flux Kontext: subject-consistent style transfer, no negative_prompt support.
         image_url = img_urls[0] if isinstance(img_urls, list) else img_urls
         body = {
             "model": chosen_model,
@@ -50,6 +54,10 @@ def generate_img(
             "image_url": image_url,
             "guidance_scale": s.STAGE1_GUIDANCE_SCALE,
             "num_inference_steps": s.STAGE1_NUM_INFERENCE_STEPS,
+            "acceleration": s.STAGE1_ACCELERATION,
+            "seed": s.KIE_SEED,
+            "image_size": s.KIE_IMAGE_SIZE,
+            "output_format": s.KIE_OUTPUT_FORMAT,
         }
 
         if negative_prompt:
@@ -62,9 +70,6 @@ def generate_img(
         input_params["reference_strength"] = s.STAGE1_REFERENCE_STRENGTH
         input_params["preserve_identity"] = True
         input_params["preserve_face"] = True
-
-        if aspect_ratio:
-            input_params["image_size"] = QwenImageSize.from_aspect_ratio(aspect_ratio).value
 
         body = {
             "model": chosen_model,
@@ -84,9 +89,10 @@ def generate_img(
             },
         }
 
-    try:
-        response = requests.post(s.KIE_CREATE_TASK_API, json=body, headers=header)
-        return response.json()
+    _log.debug("KIE REQUEST >>> %s", json.dumps(body, default=str))
 
-    except Exception:
-        raise
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(s.KIE_CREATE_TASK_API, json=body, headers=headers)
+    result = response.json()
+    _log.debug("KIE RESPONSE <<< %s", json.dumps(result, default=str))
+    return result
