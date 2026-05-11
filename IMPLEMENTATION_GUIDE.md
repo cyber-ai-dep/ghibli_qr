@@ -39,21 +39,44 @@ Configured in `main.py` via the `lifespan` context:
 loop.set_default_executor(ThreadPoolExecutor(max_workers=100))
 ```
 
-The default Python pool (`min(32, cpu+4)`) saturates quickly under high load. 100 workers allows ~200 concurrent requests before CPU-bound work queues (MediaPipe ~2s + PIL ~0.5s = ~2.5s per request × 100 threads = ~40 concurrent).
+The default Python pool is `min(32, cpu+4)` — on a 4-core machine that's 8 threads. This saturates almost instantly under any real load.
 
-### Thread Occupation Per Request
+### Thread Occupation Per Request — Before vs After
 
-| Phase | Thread time |
-|---|---|
-| Image download (validation) | 0s (async httpx) |
-| MediaPipe face detection | ~2s |
-| KIE API submission | 0s (async httpx) |
-| Waiting for Stage 1 webhook | 0s (async Future) |
-| Stage 1 rehost download | 0s (async httpx) |
-| PIL resize + save | ~0.5s |
-| Stage 2 API submission | 0s (async httpx) |
-| Waiting for Stage 2 webhook | 0s (async Future) |
-| **Total thread time per request** | **~2.5s** |
+The core improvement: network I/O no longer occupies threads. Threads are reserved for CPU work only.
+
+| Phase | Before (nouha) | After (mohammad) |
+|---|---|---|
+| Image download — validation | ~10s in thread (`requests`) | 0s — async httpx |
+| MediaPipe face detection | ~2s in thread | ~2s in thread (CPU, unavoidable) |
+| KIE API submission | ~2s in thread (`requests`) | 0s — async httpx |
+| Waiting for Stage 1 webhook | 0s (async Future) | 0s (async Future) |
+| Stage 1 rehost download | ~8s in thread (`requests`) | 0s — async httpx |
+| PIL resize + JPEG save | ~0.5s in thread | ~0.5s in thread (CPU, unavoidable) |
+| Identity check download | ~8s in thread (`requests`) | 0s — async httpx |
+| Identity check compute | ~2s in thread | ~2s in thread (CPU, unavoidable) |
+| Stage 2 API submission | ~2s in thread (`requests`) | 0s — async httpx |
+| Waiting for Stage 2 webhook | 0s (async Future) | 0s (async Future) |
+| **Total thread time per request** | **~34s** | **~4.5s** |
+
+> Note: identity check is disabled by default (`ENABLE_IDENTITY_CHECK=false`). Without it, total thread time is ~2.5s per request.
+
+### Concurrent Request Capacity
+
+Thread time directly determines how many requests can be in-flight simultaneously without queueing:
+
+```
+Concurrent capacity = thread_pool_size / thread_time_per_request
+
+Before:  8 threads  /  34s  =  ~0.2 req/s  →  only 2-3 simultaneous requests
+After:  100 threads /  2.5s  =  ~40 req/s  →  ~40 requests simultaneously without any queueing
+```
+
+In practice: each request spends 60-180s waiting for KIE webhooks (async, zero resources). The thread pool is only occupied during the ~2.5s CPU phase. With 100 threads and 2.5s per request:
+
+- 100 concurrent requests → all start without waiting
+- 500 concurrent requests → ~400 wait ~2.5s in the thread queue, then all proceed to await KIE async
+- The real bottleneck at 500+ is KIE API rate limits, not the server
 
 ### Single-Process Constraint
 
@@ -321,29 +344,104 @@ KIE_IMAGE_SIZE=square                # square is sufficient for intermediate Sta
 
 ## Scaling Path (Redis)
 
-To support multiple uvicorn workers or multiple server instances, `pending_tasks` must move to Redis.
+### Why the Current Architecture Cannot Scale Horizontally
 
-**Pattern:**
+`pending_tasks: Dict[str, asyncio.Future]` lives in the RAM of one OS process. When a request arrives:
+
+1. Worker A registers `pending_tasks[task_id] = future`
+2. KIE finishes and sends the webhook
+3. The webhook hits **any** available worker (load balancer decides)
+4. If it hits Worker B — `task_id` is not in Worker B's `pending_tasks` → future never resolves → 10-minute timeout
+
+```
+Single process (works):                  Multi-process (breaks):
+──────────────────────                   ───────────────────────────────
+Client → Worker A                        Client → Worker A
+  register future in A                     register future in A's RAM
+  KIE webhook → Worker A ✓                KIE webhook → Worker B
+  future resolved ✓                        task_id not in B's dict ✗
+                                           timeout after 600s ✗
+```
+
+### The Fix: Redis Pub/Sub
+
+Replace the in-memory dict with a Redis channel. Any worker can publish, and the correct waiting worker receives.
+
+```
+Client → Worker A → submit to KIE → subscribe to Redis channel "task:{id}"
+                                           │
+KIE webhook → Worker B (any) → publish to "task:{id}" → Worker A wakes up ✓
+```
+
+**Implementation:**
 
 ```python
-# On task submission: subscribe to a Redis channel
-async def _wait_for_task(task_id: str, timeout: int) -> CallbackRequest:
-    async with redis.pubsub() as ps:
-        await ps.subscribe(f"task:{task_id}")
-        async for msg in ps.listen():
-            if msg["type"] == "message":
-                return CallbackRequest.model_validate_json(msg["data"])
+# routes.py — replace pending_tasks dict with these two functions
 
-# In webhook handler: publish instead of set_result
+import redis.asyncio as redis
+
+_redis: redis.Redis = None  # initialised in lifespan
+
+async def _wait_for_webhook(task_id: str, timeout: int) -> CallbackRequest:
+    async with _redis.pubsub() as ps:
+        await ps.subscribe(f"task:{task_id}")
+        try:
+            async for msg in ps.listen():
+                if msg["type"] == "message":
+                    return CallbackRequest.model_validate_json(msg["data"])
+        finally:
+            await ps.unsubscribe(f"task:{task_id}")
+
+# Webhook handler — publish instead of future.set_result
 async def webhook(req: CallbackRequest):
-    await redis.publish(f"task:{req.data.taskId}", req.model_dump_json())
+    await _redis.publish(f"task:{req.data.taskId}", req.model_dump_json())
+    return JSONResponse(content=success_response(...).model_dump(by_alias=True))
 ```
 
 **Required changes:**
-1. Add `redis[asyncio]` (or `aioredis`) dependency
-2. Replace `pending_tasks` dict with Redis pub/sub in routes.py
-3. Run Redis alongside the server
-4. Remove the single-worker constraint from uvicorn startup
+
+1. Add dependency:
+   ```bash
+   uv add redis
+   ```
+
+2. Add Redis connection in `main.py` lifespan:
+   ```python
+   @asynccontextmanager
+   async def lifespan(app: FastAPI):
+       global _redis
+       _redis = redis.Redis.from_url("redis://localhost:6379")
+       loop.set_default_executor(ThreadPoolExecutor(max_workers=100))
+       yield
+       await _redis.aclose()
+   ```
+
+3. Replace all `pending_tasks[task_id] = future` / `await asyncio.wait_for(future, ...)` blocks in `routes.py` with calls to `_wait_for_webhook(task_id, timeout)`
+
+4. Replace `future.set_result(req)` in the webhook handler with `await _redis.publish(...)`
+
+5. Remove `pending_tasks` dict from module level
+
+6. Run Redis alongside the server (Docker Compose example):
+   ```yaml
+   services:
+     api:
+       build: .
+       ports: ["8010:8010"]
+       environment:
+         - REDIS_URL=redis://redis:6379
+       depends_on: [redis]
+     redis:
+       image: redis:7-alpine
+       ports: ["6379:6379"]
+   ```
+
+7. Start with multiple workers:
+   ```bash
+   uvicorn src.ghibli_portrait.main:app --workers 4 --host 0.0.0.0 --port 8010
+   ```
+
+**After Redis migration: capacity scales linearly with workers.** 4 workers × 40 concurrent each = 160 simultaneous requests without queueing, with no shared state issues.
 
 ---
 
