@@ -99,7 +99,16 @@ All network I/O uses **httpx async** — the event loop is never blocked by HTTP
 └── All 500 then await KIE async    → CPU 0%
 ```
 
-Tune `MAX_MEDIAPIPE_CONCURRENCY` in `.env` to balance throughput vs CPU load on shared servers (default `15`).
+The semaphore is applied **only around MediaPipe (~2s)**, not the image download (~10s). Downloads run concurrently with no limit — the slot is held for ~2s instead of ~12s, reducing wait time for 500 requests from ~400s to ~67s.
+
+**Tuning `MAX_MEDIAPIPE_CONCURRENCY`:**
+
+| Value | Wait time (500 requests) | CPU peak |
+|---|---|---|
+| `15` *(default)* | ~67s | ~15% |
+| `30` | ~33s | ~30% |
+| `50` | ~20s | ~50% |
+| `REQUIRE_HUMAN_FACE=false` | ~0s | ~0% |
 
 **Single-process limitation**: `pending_tasks` is an in-memory dict — all requests must hit the same process. Horizontal scaling (multiple workers/instances) requires replacing it with Redis pub/sub. See [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) for the scaling path.
 
