@@ -24,11 +24,45 @@ uv run uvicorn src.ghibli_portrait.main:app \
 
 ---
 
+## Workers
+
+Always run with `--workers 1`.
+
+### Why `--workers 1` is mandatory
+
+`pending_tasks` is an in-memory `dict[task_id → asyncio.Future]`. Each worker is a separate OS process with its own memory space.
+
+If you run `--workers 2`:
+- Worker A registers `pending_tasks[task_id] = future`
+- KIE webhook arrives at Worker B (load balancer decides)
+- Worker B has no `task_id` in its dict → future never resolves → 600s timeout → request hangs
+
+This is an architectural constraint, not a performance trade-off.
+
+### Why a single worker is NOT a bottleneck
+
+Worker ≠ one request at a time. asyncio handles concurrency at the coroutine level — a single worker processes hundreds of concurrent requests simultaneously:
+
+| Mechanism | Handles |
+|---|---|
+| asyncio event loop | Hundreds of concurrent requests in parallel |
+| `httpx` async | Image downloads, KIE API calls — zero threads used |
+| `asyncio.Future` | Waiting for KIE webhook (0 CPU, 0 threads, 30-300s) |
+| `ThreadPoolExecutor(100)` | Only CPU-bound work: MediaPipe (~2s), PIL (~0.5s) |
+
+While request A waits 60-300s for KIE to process, the event loop serves requests B, C, D simultaneously. The real bottleneck at scale is KIE API rate limits, not the server.
+
+### Scaling beyond one worker
+
+Requires replacing `pending_tasks` with Redis pub/sub so any worker can resolve any webhook. See [IMPLEMENTATION_GUIDE.md — Scaling Path](IMPLEMENTATION_GUIDE.md#scaling-path-redis).
+
+---
+
 ## Environment Variables
 
 ```env
 # Required
-DOMAIN=https://your-domain.com        # Public URL — used for webhook callback and static file URLs
+DOMAIN=https://your-domain.com        # Public URL — no trailing slash. Leading/trailing spaces are stripped automatically.
 KIE_API_KEY=your_key
 
 # Models
@@ -245,5 +279,5 @@ KIE webhook endpoint. Do not call directly. Receives task completion notificatio
 - Run uvicorn from the `ghibli_qr/` directory, not from `ghibli/`
 
 **Do not use `--workers N > 1`**
-- `pending_tasks` is in-memory — webhooks arriving at a different worker will never resolve → timeout
-- Single worker handles many concurrent requests fine via asyncio
+- `pending_tasks` is in-memory — webhooks arriving at a different worker will never resolve → 600s timeout
+- Single worker handles hundreds of concurrent requests via asyncio (see [Workers](#workers) section)

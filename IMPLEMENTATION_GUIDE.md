@@ -50,11 +50,16 @@ An `asyncio.Semaphore` wraps the face-detection call in both pipeline endpoints:
 _mediapipe_sem = asyncio.Semaphore(int(s.MAX_MEDIAPIPE_CONCURRENCY))  # default 15
 
 # inside automated_pipeline and transform2ghibli
-async with _mediapipe_sem:
-    validation_result = await validate_real_human_image_async(url, settings=s)
+# Semaphore is passed as parameter — applied inside validate_real_human_image_async
+# only around the MediaPipe call (~2s), not the image download (~10s).
+validation_result = await validate_real_human_image_async(
+    url, settings=s, mediapipe_sem=_mediapipe_sem
+)
 ```
 
 This caps concurrent CPU usage regardless of thread pool size. Requests beyond the limit wait in the asyncio event loop (zero threads, zero CPU) until a slot opens (~2.5s per slot).
+
+The semaphore wraps **only the MediaPipe thread call** — not the download. A request holds the slot for ~2s instead of ~12s, so 500 requests clear in ~67s instead of ~400s.
 
 **Why semaphore and not just reducing thread pool size?**
 The thread pool is shared by PIL and QR generation too. Reducing it would also throttle those operations. The semaphore targets only MediaPipe.
@@ -250,11 +255,12 @@ validate_real_human_image_async(image_url)          ← async entry point
 ### `main.py`
 
 - FastAPI app with two exception handlers: `RequestValidationError` (→ 422 JSON) and global `Exception` (→ 500 JSON instead of plain-text)
-- `lifespan` context:
-  - Sets `ThreadPoolExecutor(max_workers=100)` on startup
+- `lifespan` context (runs before any request is accepted):
+  - Creates `static/tmp/` directory if missing (`TMP_PATH.mkdir(parents=True, exist_ok=True)`) — safe on fresh clone
+  - Sets `ThreadPoolExecutor(max_workers=100)` on the event loop
   - Pre-downloads MediaPipe model via `asyncio.to_thread(_ensure_model_downloaded)`
   - Starts `_tmp_cleanup_loop` background task (deletes `.jpg`/`.png` files older than 2h every 30 min)
-- Mounts `/tmp` as static file server
+- Mounts `/tmp` as static file server (directory check is lazy — first request, so lifespan mkdir runs first)
 
 ### `api/routes.py`
 
@@ -321,6 +327,8 @@ def get_qr(url, version) -> Image
 ### `config.py`
 
 Module-level `Settings` class (not a Pydantic BaseSettings — plain class with `os.getenv` reads). Instantiated once at module import time in each service that needs it.
+
+`DOMAIN` is read with `.strip().rstrip('/')` — leading/trailing spaces in `.env` (e.g., `DOMAIN= https://...`) are silently removed so `CALL_BACK` and all `/tmp/` URLs are always valid.
 
 Key settings groups:
 - **QR**: version, fill/back color, proportional sizing ratios

@@ -269,8 +269,9 @@ cd ghibli_qr
 pip install uv
 uv sync
 cp .env.example .env
-mkdir -p src/ghibli_portrait/static/tmp
 ```
+
+> `static/tmp/` is created automatically on first server startup — no manual `mkdir` needed.
 
 Edit `.env`:
 ```env
@@ -347,7 +348,7 @@ Then:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `DOMAIN` | Yes | — | Public URL for webhooks and static file serving |
+| `DOMAIN` | Yes | — | Public URL for webhooks and static file serving. No trailing slash. Leading/trailing spaces are stripped automatically. |
 | `KIE_API_KEY` | Yes | — | KIE.ai API authentication key |
 | `KIE_GHIBLI_MODEL` | Yes | — | Stage 1 model (`flux-kontext-pro` recommended) |
 | `KIE_COMPOSE_MODEL` | Yes | — | Stage 2 model (`seedream/4.5-edit`) |
