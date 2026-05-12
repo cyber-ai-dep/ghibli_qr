@@ -482,14 +482,25 @@ async def webhook(req: CallbackRequest):
 # Terminal 1: ngrok tunnel
 ngrok http 8010
 
-# Terminal 2: server (--reload for dev, single worker — never --workers N without Redis)
-uv run uvicorn src.ghibli_portrait.main:app --reload --host 0.0.0.0 --port 8010 --log-level warning
+# Terminal 2: server
+uv run uvicorn src.ghibli_portrait.main:app \
+  --host 0.0.0.0 --port 8010 \
+  --workers 1 \
+  --log-level info
 ```
+
+- **Swagger UI**: http://localhost:8010/docs
+- **ReDoc**: http://localhost:8010/redoc
+
+> Do not use `--reload` during pipeline testing — server restart wipes `pending_tasks` mid-request.
 
 ### Production (single instance)
 
 ```bash
-uv run uvicorn src.ghibli_portrait.main:app --host 0.0.0.0 --port 8010 --log-level warning
+uv run uvicorn src.ghibli_portrait.main:app \
+  --host 0.0.0.0 --port 8010 \
+  --workers 1 \
+  --log-level warning
 ```
 
 ### Docker
