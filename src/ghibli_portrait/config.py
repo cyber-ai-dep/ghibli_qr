@@ -73,6 +73,7 @@ class Settings:
     PROMPT_PIC_TO_GHIBLI = (
         "Transform this portrait into a gentle Studio Ghibli style illustration. "
         "Faithfully preserve the person's exact face features, skin tone, face shape, hairstyle, and expression. "
+        "Keep the exact skin tone and complexion — do not lighten, darken, or change it. "
         "Apply only light Ghibli stylization: clean soft lines, smooth skin — absolutely no heavy anime exaggeration. "
         "Flat solid background color RGB(238, 240, 248). "
         "No shadows, no gradients, no scenery, no patterns, no background elements."
@@ -80,8 +81,8 @@ class Settings:
 
     # Negative prompt for Stage 1 — passed when the model supports it.
     NEGATIVE_PROMPT_PIC_TO_GHIBLI = (
-        "generic anime face, identity drift, race change, skin tone change, beautification, "
-        "face replacement, facial simplification, cartoon redesign, different person, "
+        "generic anime face, identity drift, race change, skin tone change, skin lightening, skin whitening, skin darkening, "
+        "beautification, face replacement, facial simplification, cartoon redesign, different person, "
         "altered ethnicity, altered hairstyle, altered expression, "
         "gradient background, colored background, scenery, landscape, sky, outdoors, "
         "shadows, gradients, patterns, decorative background, background objects"
