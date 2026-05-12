@@ -297,8 +297,16 @@ KIE_IMAGE_SIZE=square
 
 Run:
 ```bash
-uv run uvicorn src.ghibli_portrait.main:app --host 0.0.0.0 --port 8010 --log-level warning
+uv run uvicorn src.ghibli_portrait.main:app \
+  --host 0.0.0.0 --port 8010 \
+  --workers 1 \
+  --log-level warning
 ```
+
+> `--workers 1` is required — see [Deployment](#deployment).
+
+- **Swagger UI**: http://localhost:8010/docs
+- **ReDoc**: http://localhost:8010/redoc
 
 ### Webhook Setup (local development)
 
@@ -376,8 +384,16 @@ src/ghibli_portrait/
 
 ```bash
 # Single worker (required — pending_tasks is in-memory)
-uv run uvicorn src.ghibli_portrait.main:app --host 0.0.0.0 --port 8010 --log-level warning
+uv run uvicorn src.ghibli_portrait.main:app \
+  --host 0.0.0.0 --port 8010 \
+  --workers 1 \
+  --log-level warning
+```
 
+- **Swagger UI**: http://SERVER_IP:8010/docs
+- **ReDoc**: http://SERVER_IP:8010/redoc
+
+```bash
 # Docker
 docker build -t ghibli-api .
 docker run -p 8010:8010 --env-file .env ghibli-api

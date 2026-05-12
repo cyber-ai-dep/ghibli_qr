@@ -11,10 +11,16 @@ uv sync
 cp .env.example .env
 # Edit .env — set KIE_API_KEY, DOMAIN, KIE_GHIBLI_MODEL, KIE_COMPOSE_MODEL
 
-uv run uvicorn src.ghibli_portrait.main:app --host 0.0.0.0 --port 8010 --log-level info
+uv run uvicorn src.ghibli_portrait.main:app \
+  --host 0.0.0.0 --port 8010 \
+  --workers 1 \
+  --log-level info
 ```
 
-Swagger UI: `http://localhost:8010/docs`
+> `--workers 1` is required — `pending_tasks` is in-memory. Multiple workers break webhook resolution.
+
+- **Swagger UI**: http://localhost:8010/docs
+- **ReDoc**: http://localhost:8010/redoc
 
 ---
 
