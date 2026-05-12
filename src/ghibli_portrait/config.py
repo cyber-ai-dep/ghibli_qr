@@ -54,27 +54,43 @@ class Settings:
     # Re-enable once a proper img2img model (e.g. flux-kontext-pro) is configured.
     ENABLE_IDENTITY_CHECK = os.getenv("ENABLE_IDENTITY_CHECK", "false").lower() in {"1", "true", "yes"}
 
-    # Stage 1 fidelity controls — maximize identity preservation.
+    # Stage 1 fidelity controls — balance identity preservation with visible style transfer.
     # Passed to the model if supported; silently ignored otherwise.
-    STAGE1_IMAGE_STRENGTH = 0.35      # Low = closer to source (less transformation)
-    STAGE1_DENOISE = 0.30             # Low denoising preserves original structure
-    STAGE1_FIDELITY = 0.95            # High fidelity to reference image
-    STAGE1_REFERENCE_STRENGTH = 0.95  # Max reference/guidance strength
+    # image_strength/denoise at ~0.65 allow full Ghibli stylization while still referencing
+    # the source face structure. Too low (0.35) and the photo barely changes; identity preserved
+    # but no Ghibli style shows through.
+    STAGE1_IMAGE_STRENGTH = 0.65      # Allow artistic transformation; lower = less change
+    STAGE1_DENOISE = 0.65             # Allow stylistic rendering; lower = closer to photo
+    STAGE1_FIDELITY = 0.90            # High structural fidelity to reference image
+    STAGE1_REFERENCE_STRENGTH = 0.90  # Strong reference/guidance
     # Qwen-specific generation quality controls
-    STAGE1_GUIDANCE_SCALE = float(os.getenv("STAGE1_GUIDANCE_SCALE", "3.0"))
+    STAGE1_GUIDANCE_SCALE = float(os.getenv("STAGE1_GUIDANCE_SCALE", "7.5"))
     STAGE1_NUM_INFERENCE_STEPS = int(os.getenv("STAGE1_NUM_INFERENCE_STEPS", "30"))
 
     # Prompts
     PROMPT_PIC_TO_GHIBLI = (
-        "Convert this image to Ghibli style art  ,"  
-        "Use a clean solid background RGB(238, 240, 248) "
-
+        "Convert this photo into a Studio Ghibli hand-painted illustration. "
+        "Apply the full Ghibli visual style: soft watercolor backgrounds, warm painterly color palette, "
+        "clean expressive linework, cel-shaded lighting, lush atmospheric depth, and the characteristic "
+        "hand-drawn Ghibli texture throughout every surface.\n\n"
+        "IDENTITY LOCK — never change these:\n"
+        "Same person, same face structure, same skin tone, same ethnicity, same race.\n"
+        "Same hairstyle, same facial hair, same expression.\n"
+        "Same clothing, same pose, same hands, same background composition.\n\n"
+        "STYLE CHANGE — only these:\n"
+        "Render everything as a hand-painted Ghibli illustration.\n"
+        "Apply Ghibli color grading, line art, and painterly texture.\n"
+        "Make it look like a frame from a Studio Ghibli film.\n\n"
+        "DO NOT: replace the face, change ethnicity, lighten/darken skin, "
+        "use a generic anime face, beautify, or alter facial proportions.\n\n"
+        "Result: the exact same person rendered as a Ghibli film character."
     )
 
     # Negative prompt for Stage 1 — passed when the model supports it.
     NEGATIVE_PROMPT_PIC_TO_GHIBLI = (
+        "photorealistic, photograph, realistic lighting, camera photo, "
         "generic anime face, identity drift, race change, skin tone change, beautification, "
-        "face replacement, facial simplification, cartoon redesign, different person, "
+        "face replacement, facial simplification, different person, "
         "altered ethnicity, altered hairstyle, altered expression"
     )
 
