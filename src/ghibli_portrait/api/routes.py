@@ -668,19 +668,15 @@ async def automated_pipeline(request: GhibliQRRequest):
                 )
 
         # =====================================================================
-        # STAGE 2: Compose Ghibli + QR lock (seedream)
+        # STAGE 2: Compose Ghibli + QR lock (seedream) — retries up to 3x
         # =====================================================================
-        res = generate_img([ghibli_local_url, qr_lock_url_path], s.PROMPT_GHIBLI_LOCK, model=s.KIE_COMPOSE_MODEL)
-        if res["code"] != 200:
-            return JSONResponse(
-                status_code=500,
-                content=external_error_response(
-                    message="Stage 2 (composition) API error",
-                    code="STAGE2_API_ERROR",
-                    stage=ErrorStage.STAGE2_QR,
-                    detail=res.get("msg", "External API error"),
-                ).model_dump(by_alias=True)
-            )
+        last_webhook_result_2 = None
+        last_params = None
+        last_result_urls = None
+        last_qr_validation = None
+
+        for attempt in range(1, 4):
+            res2 = generate_img([ghibli_local_url, qr_lock_url_path], s.PROMPT_GHIBLI_LOCK, model=s.KIE_COMPOSE_MODEL)
             if res2.get("code") != 200:
                 return JSONResponse(
                     status_code=500,
@@ -739,7 +735,7 @@ async def automated_pipeline(request: GhibliQRRequest):
             if qr_validation.ok:
                 break
 
-            # ✅ retry only when payload not detected at all (QR missing / not scannable)
+            # retry only when QR payload not detected at all (missing / not scannable)
             if (
                 qr_validation.detected_payload is None
                 and qr_validation.reason == "no valid qr payload detected in merged image"
@@ -747,7 +743,7 @@ async def automated_pipeline(request: GhibliQRRequest):
             ):
                 continue
 
-            # ❌ any other failure (wrong payload, etc) -> do not retry
+            # any other failure (wrong payload, etc) — do not retry
             break
 
         qr_validation_data = {

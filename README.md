@@ -6,50 +6,59 @@ Production-ready API for transforming portraits into Ghibli-style art with QR co
 
 Transforms real portrait photos into hand-drawn Studio Ghibli-style illustrations and generates QR codes embedded in a lock-screen overlay. Features an automated two-stage async pipeline with webhook-based task handling.
 
+---
+
 ## What's New (Latest Release)
 
-### Identity-Preserving Style Transfer
-The Stage 1 prompt system has been completely overhauled to enforce strict identity fidelity during Ghibli transformation:
+### Ghibli Style Tuning — Visible Style Transfer with Identity Preservation
+The Stage 1 generation parameters have been rebalanced to produce actual Ghibli-style art while keeping the person's identity intact:
 
-- **Strict style-transfer prompt** — explicitly instructs the model to preserve exact skin tone, ethnicity, facial geometry, hair, clothing, pose, background, and composition. Only the artistic rendering style may change.
-- **Negative prompt support** — a separate negative prompt is passed to models that support it, explicitly forbidding generic anime faces, identity drift, skin tone changes, and facial simplification.
-- **Model fidelity controls** — `image_strength`, `denoise`, `fidelity`, `reference_strength`, `preserve_identity`, and `preserve_face` parameters are injected into Stage 1 API calls for models that support them.
-- **Qwen generation quality tuning** — `guidance_scale` (default `3.0`) and `num_inference_steps` (default `30`) are now configurable via environment variables, giving finer control over how strongly the model follows the style prompt vs. preserving the source.
+- **`guidance_scale` raised from `3.0` → `7.5`** — the model now follows the Ghibli style prompt strongly instead of barely applying any style change
+- **`image_strength` raised from `0.35` → `0.65`** — allows real artistic transformation (at 0.35 the photo barely changed)
+- **`denoise` raised from `0.30` → `0.65`** — allows stylistic rendering instead of staying photo-like
+- **`fidelity` / `reference_strength` kept high (`0.90`)** — still anchors face structure and identity
+- **Richer style prompt** — the prompt now describes concrete Ghibli visual qualities: soft watercolor backgrounds, warm painterly palette, cel-shaded lighting, clean expressive linework, atmospheric depth. Previously it only listed identity preservation rules with no visual style description.
+- **Negative prompt updated** — added `photorealistic, photograph, realistic lighting, camera photo` to push the model away from producing a photo-realistic output
+
+### Identity-Preserving Style Transfer
+The Stage 1 prompt system enforces identity fidelity during Ghibli transformation:
+
+- **Identity lock rules** — explicitly instructs the model to preserve exact skin tone, ethnicity, facial geometry, hair, clothing, pose, and composition
+- **Negative prompt support** — passed to models that support it, forbidding generic anime faces, identity drift, skin tone changes, and facial simplification
+- **Fidelity controls** — `image_strength`, `denoise`, `fidelity`, `reference_strength`, `preserve_identity`, `preserve_face` are injected into Stage 1 API calls
 
 ### Post-Generation Identity Drift Detection
-A heuristic identity check runs after Stage 1 output is downloaded:
+A heuristic identity check can run after Stage 1 output is downloaded:
 
 - Detects **face absence** in the output (full identity replacement)
 - Detects **face area drift** > 30% (extreme recomposition)
-- Detects **skin-tone hue shift** > 40° in the face region (catches ethnicity / skin-tone changes)
+- Detects **skin-tone hue shift** > 40° in the face region
 - On drift detection, **automatically retries Stage 1 once** before rejecting
-- Controlled by `ENABLE_IDENTITY_CHECK` env var (default `false` — enable once a high-fidelity model is configured)
+- Controlled by `ENABLE_IDENTITY_CHECK` env var (default `false` — disabled because `qwen/image-edit` triggers false positives with Ghibli style; re-enable if switching to a high-fidelity model)
 
-### Flux Kontext Model Support
-Full support for `flux-kontext-pro` / `flux-kontext-max` has been added to the generation layer:
+### Flux Kontext Model Support (Code-Ready)
+Full support for `flux-kontext-pro` / `flux-kontext-max` is implemented in the generation layer:
 
 - Correct flat-under-`input` payload structure (`inputImage`, `aspectRatio`, `outputFormat`, `safetyTolerance`)
-- Flux Kontext callback result format (`info.resultImageUrl`) is handled alongside the standard `resultUrls` format
-- Set `KIE_GHIBLI_MODEL=flux-kontext-pro` in `.env` to activate — provides significantly better identity preservation than `qwen/image-edit`
+- Flux Kontext callback result format (`info.resultImageUrl`) handled alongside standard `resultUrls`
+- Set `KIE_GHIBLI_MODEL=flux-kontext-pro` in `.env` to activate — **verify the model ID is available on your KIE account first**
+- Currently **not active** — `KIE_GHIBLI_MODEL=qwen/image-edit` is the working model
 
 ### Stage 2 Download Timeout Fix
 Resolved KIE Stage 2 (Seedream) timing out when downloading input images:
 
-- **Stage 1 output re-hosted locally** — the Qwen CDN URL (`tempfile.aiquickdraw.com`) is temporary and often unreachable cross-service. Stage 1 output is now downloaded immediately, resized to max 1024px, saved as JPEG (~200–400 KB), and served from the local server.
-- **QR lock image resized to JPEG** — the original 2304×1728 PNG lock file (~2.6 MB) was timing out mid-transfer over the tunnel. It is now resized to max 1024px and saved as JPEG (~117 KB) before being passed to Stage 2.
+- **Stage 1 output re-hosted locally** — CDN URL is temporary and often unreachable cross-service. Stage 1 output is downloaded immediately, resized to max 1024px, saved as JPEG, and served from the local server
+- **QR lock image resized to JPEG** — original PNG lock file resized to max 1024px JPEG before being passed to Stage 2
 
 ### QR Proportional Sizing
-Hardcoded pixel values for QR placement have been replaced with aspect-ratio-aware ratios:
-
 - `QR_LOCK_TARGET_WIDTH_RATIO = 0.28` — QR targets 28% of lock image width
 - `QR_LOCK_MIN_WIDTH_RATIO = 0.22` / `QR_LOCK_MAX_WIDTH_RATIO = 0.32` — clamped range
-- QR is centered horizontally and placed at ~46% down (lower-torso/hand area) with a 2% bottom margin
 - Works correctly with any lock image resolution
 
 ### API Contract & Swagger Fixes
-- All route decorators now carry `response_model=ApiSuccessResponse` and `responses={422, 500, 504}` — Swagger shows correct schemas instead of raw strings
-- Global `RequestValidationError` handler converts Pydantic validation errors to the V1 unified envelope (no more FastAPI default `{"detail": [...]}` on 422s)
-- Webhook endpoint now returns proper `success_response` / `external_error_response` instead of a raw Pydantic model
+- All route decorators carry `response_model=ApiSuccessResponse` and `responses={422, 500, 504}`
+- Global `RequestValidationError` handler converts Pydantic validation errors to the V1 unified envelope
+- Tag corrected to `"API Production"` (was `"Api Production"`)
 
 ---
 
@@ -78,12 +87,12 @@ Hardcoded pixel values for QR placement have been replaced with aspect-ratio-awa
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    STAGE 1: Ghibli Transformation                        │
-│        (configurable model — flux-kontext-pro recommended)               │
-│          Strict identity-preserving prompt + fidelity controls           │
+│                  (Active model: qwen/image-edit)                         │
+│     Rich Ghibli style prompt + identity lock + fidelity controls         │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│              IDENTITY DRIFT CHECK (optional, post-Stage 1)               │
+│          IDENTITY DRIFT CHECK (optional — disabled by default)           │
 │     Face presence · Area stability · Skin-tone hue — auto-retry once    │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ▼
@@ -116,44 +125,48 @@ Hardcoded pixel values for QR placement have been replaced with aspect-ratio-awa
 
 ---
 
-## Stage 1: Identity-Preserving Style Transfer
+## Stage 1: Ghibli Style Transfer
 
-### Model Recommendation
+### Active Model
 
-| Model | Identity Preservation | Notes |
-|-------|----------------------|-------|
-| `flux-kontext-pro` | **Excellent** | Recommended — built for subject-consistent editing |
-| `flux-kontext-max` | **Excellent** | Higher quality, slower |
-| `qwen/image-edit` | Poor | Legacy fallback — known to drift skin tone and identity |
+| Model | Status | Identity Preservation | Notes |
+|-------|--------|-----------------------|-------|
+| `qwen/image-edit` | **Active** | Moderate | Current working model — tuned with high guidance_scale and style prompt |
+| `flux-kontext-pro` | Code-ready | Excellent | Better identity preservation — activate once model ID confirmed on your KIE account |
+| `flux-kontext-max` | Code-ready | Excellent | Higher quality, slower — same requirement |
 
-Set `KIE_GHIBLI_MODEL` in `.env` to switch models. The code handles both the Qwen and Flux Kontext API payload structures automatically.
+Set `KIE_GHIBLI_MODEL` in `.env` to switch models. The code handles Qwen, Flux Kontext, and Seedream API payload structures automatically.
 
 ### Prompt Strategy
 
 Stage 1 uses a two-part prompt system:
 
-**Positive prompt** — tells the model exactly what to preserve:
-> *"Transform this EXACT input image into Studio Ghibli style. Preserve the exact same person, exact identity, exact face structure, exact skin tone, exact ethnicity, exact race, exact hairstyle, exact facial hair, exact expression, exact clothing, exact pose, exact hands, exact background, exact composition. ONLY change artistic style to hand-drawn Studio Ghibli illustration."*
+**Positive prompt** — describes the Ghibli style and what identity traits to preserve:
+> *"Convert this photo into a Studio Ghibli hand-painted illustration. Apply the full Ghibli visual style: soft watercolor backgrounds, warm painterly color palette, clean expressive linework, cel-shaded lighting, lush atmospheric depth, and the characteristic hand-drawn Ghibli texture throughout every surface.*
+>
+> *IDENTITY LOCK — never change: same person, same face structure, same skin tone, same ethnicity, same race, same hairstyle, same facial hair, same expression, same clothing, same pose, same hands, same background composition.*
+>
+> *Result: the exact same person rendered as a Ghibli film character."*
 
 **Negative prompt** (applied when supported by the model):
-> *"generic anime face, identity drift, race change, skin tone change, beautification, face replacement, facial simplification, cartoon redesign, different person, altered ethnicity, altered hairstyle, altered expression"*
+> *"photorealistic, photograph, realistic lighting, camera photo, generic anime face, identity drift, race change, skin tone change, beautification, face replacement, facial simplification, different person, altered ethnicity, altered hairstyle, altered expression"*
 
-### Fidelity Parameters
+### Fidelity Parameters (Active Values)
 
 The following parameters are injected into every Stage 1 API call (silently ignored if unsupported):
 
 | Parameter | Value | Effect |
 |-----------|-------|--------|
-| `image_strength` | `0.35` | Low = minimal deviation from source |
-| `denoise` | `0.30` | Low denoising preserves original structure |
-| `fidelity` | `0.95` | High fidelity to reference image |
-| `reference_strength` | `0.95` | Maximum reference/guidance strength |
+| `guidance_scale` | `7.5` | Strong prompt adherence — model follows Ghibli style instruction |
+| `num_inference_steps` | `30` | Generation quality |
+| `image_strength` | `0.65` | Allows full artistic transformation while referencing source |
+| `denoise` | `0.65` | Allows stylistic rendering |
+| `fidelity` | `0.90` | High structural fidelity to reference image |
+| `reference_strength` | `0.90` | Strong reference/guidance anchoring identity |
 | `preserve_identity` | `true` | Explicit identity lock |
 | `preserve_face` | `true` | Explicit face lock |
-| `guidance_scale` | `3.0` (Qwen) | Lower = less instruction-following, better identity retention |
-| `num_inference_steps` | `30` (Qwen) | Higher step count for quality |
 
-All configurable via environment variables (`STAGE1_GUIDANCE_SCALE`, `STAGE1_NUM_INFERENCE_STEPS`).
+`guidance_scale` and `num_inference_steps` are overridable via environment variables.
 
 ---
 
@@ -190,13 +203,6 @@ The system accepts **any image containing a human face**, regardless of:
 | No face detected | `NO_FACE_DETECTED` | MediaPipe found zero faces in the image |
 | Multiple prominent faces | `MULTIPLE_FACES` | Secondary face ≥65% area AND ≥60% confidence of primary |
 | Detector failure | `FACE_DETECTOR_FAILURE` | MediaPipe runtime error (SYSTEM_ERROR) |
-
-### Primary Face Selection
-
-When multiple faces are detected, the **primary face** is selected by:
-1. Largest bounding box area
-2. Highest confidence score
-3. Closest to image center
 
 ---
 
@@ -336,8 +342,9 @@ Edit `.env`:
 DOMAIN=https://your-domain.com
 KIE_API_KEY=your_kie_api_key
 
-# Stage 1 — flux-kontext-pro recommended for identity preservation
-KIE_GHIBLI_MODEL=flux-kontext-pro
+# Stage 1 — active model (qwen/image-edit confirmed working)
+# Switch to flux-kontext-pro once confirmed available on your KIE account
+KIE_GHIBLI_MODEL=qwen/image-edit
 
 # Stage 2 — QR composition
 KIE_COMPOSE_MODEL=seedream/4.5-edit
@@ -348,7 +355,8 @@ MAX_FACES=1
 MIN_FACE_AREA_RATIO=0.03
 SHORT_CODE_LENGTH=8
 
-# Identity drift check (enable once using flux-kontext)
+# Identity drift check (disabled — qwen triggers false positives with Ghibli style)
+# Enable once using flux-kontext-pro
 ENABLE_IDENTITY_CHECK=false
 ```
 
@@ -372,14 +380,14 @@ ngrok http 8010
 |----------|----------|---------|-------------|
 | `DOMAIN` | Yes | — | Public URL for webhooks and static file serving |
 | `KIE_API_KEY` | Yes | — | KIE.ai API authentication key |
-| `KIE_GHIBLI_MODEL` | Yes | — | Stage 1 model (`flux-kontext-pro` recommended) |
+| `KIE_GHIBLI_MODEL` | Yes | — | Stage 1 model (`qwen/image-edit` active; `flux-kontext-pro` when available) |
 | `KIE_COMPOSE_MODEL` | Yes | — | Stage 2 model (`seedream/4.5-edit`) |
 | `REQUIRE_HUMAN_FACE` | No | `true` | Enable face detection gate |
 | `MAX_FACES` | No | `1` | Max prominent faces allowed (0 = unlimited) |
 | `MIN_FACE_AREA_RATIO` | No | `0.03` | Minimum face-to-image area ratio |
 | `SHORT_CODE_LENGTH` | No | `8` | URL shortener code length |
-| `ENABLE_IDENTITY_CHECK` | No | `false` | Post-generation identity drift detection |
-| `STAGE1_GUIDANCE_SCALE` | No | `3.0` | Qwen guidance scale (lower = more identity preservation) |
+| `ENABLE_IDENTITY_CHECK` | No | `false` | Post-generation identity drift detection (disable for qwen) |
+| `STAGE1_GUIDANCE_SCALE` | No | `7.5` | Qwen guidance scale — higher = stronger Ghibli style |
 | `STAGE1_NUM_INFERENCE_STEPS` | No | `30` | Qwen inference steps |
 
 ---
@@ -397,7 +405,7 @@ ngrok http 8010
 | `STAGE1_API_ERROR` | 500 | STAGE1_GHIBLI | Stage 1 API returned an error |
 | `STAGE1_TASK_FAILED` | 500 | STAGE1_GHIBLI | Stage 1 generation task failed |
 | `STAGE1_TIMEOUT` | 504 | STAGE1_GHIBLI | Stage 1 exceeded 5-minute timeout |
-| `IDENTITY_DRIFT_DETECTED` | 500 | STAGE1_GHIBLI | Stage 1 output failed identity preservation check after retry |
+| `IDENTITY_DRIFT_DETECTED` | 500 | STAGE1_GHIBLI | Stage 1 output failed identity check after retry |
 | `STAGE2_API_ERROR` | 500 | STAGE2_QR | Stage 2 API returned an error |
 | `STAGE2_TASK_FAILED` | 500 | STAGE2_QR | Stage 2 composition task failed |
 | `STAGE2_TIMEOUT` | 504 | STAGE2_QR | Stage 2 exceeded 5-minute timeout |
@@ -411,7 +419,7 @@ ngrok http 8010
 - **Pydantic v2** — schema validation with camelCase API surface
 - **Pillow** — image processing, JPEG optimization, QR placement
 - **MediaPipe** — BlazeFace CPU-only face detection
-- **KIE.ai API** — AI image generation (Flux Kontext / Qwen / Seedream)
+- **KIE.ai API** — AI image generation (Qwen / Seedream; Flux Kontext code-ready)
 - **Python 3.10+**
 
 ---
@@ -426,7 +434,7 @@ src/ghibli_portrait/
 ├── models/
 │   └── schemas.py            # Request/response schemas (camelCase)
 ├── services/
-│   ├── image_service.py      # KIE API calls (Flux Kontext / Qwen / Seedream)
+│   ├── image_service.py      # KIE API calls (Qwen / Flux Kontext / Seedream)
 │   ├── identity_check.py     # Post-generation identity drift detection
 │   ├── qr_service.py         # QR code generation (proportional sizing)
 │   └── validation_service.py # Multi-layer validation gate
