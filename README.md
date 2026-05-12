@@ -297,10 +297,17 @@ KIE_IMAGE_SIZE=square
 
 Run:
 ```bash
+# Production — minimal logs
 uv run uvicorn src.ghibli_portrait.main:app \
   --host 0.0.0.0 --port 8010 \
   --workers 1 \
   --log-level warning
+
+# Development / request tracking — shows every incoming request
+uv run uvicorn src.ghibli_portrait.main:app \
+  --host 0.0.0.0 --port 8010 \
+  --workers 1 \
+  --log-level info
 ```
 
 > `--workers 1` is required — see [Deployment](#deployment).
