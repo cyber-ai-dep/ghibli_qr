@@ -125,11 +125,15 @@ task_id = res["data"]["taskId"]
 future = asyncio.get_running_loop().create_future()
 pending_tasks[task_id] = future
 
-# Webhook handler (any concurrent request)
-async def webhook(req: CallbackRequest):
+# Webhook handler — accepts raw Request to prevent Pydantic 422 before handler runs.
+# Always returns 200 to KIE regardless of payload validity.
+async def webhook(raw_request: Request):
+    body = await raw_request.json()
+    req = CallbackRequest.model_validate(body)   # inside try/except in real code
     future = pending_tasks.pop(req.data.taskId, None)
     if future and not future.done():
         future.set_result(req)
+    return JSONResponse(content={"code": 200, "msg": "ok"})
 
 # Timeout cleanup handled by finally block
 try:
@@ -166,7 +170,7 @@ validate_real_human_image_async(image_url)          ← async entry point
 ### Face Detection
 
 **Technology**: MediaPipe BlazeFace (`blaze_face_short_range.tflite`)
-- Auto-downloaded to `src/ghibli_portrait/models/` on first use
+- Pre-downloaded to `src/ghibli_portrait/models/` at server startup (via `lifespan`)
 - CPU-only, no GPU dependency
 - Confidence threshold: 0.35
 
@@ -223,8 +227,11 @@ validate_real_human_image_async(image_url)          ← async entry point
 
 ### `main.py`
 
-- FastAPI app and global `RequestValidationError` handler
-- `lifespan` context: sets `ThreadPoolExecutor(max_workers=100)` on startup
+- FastAPI app with two exception handlers: `RequestValidationError` (→ 422 JSON) and global `Exception` (→ 500 JSON instead of plain-text)
+- `lifespan` context:
+  - Sets `ThreadPoolExecutor(max_workers=100)` on startup
+  - Pre-downloads MediaPipe model via `asyncio.to_thread(_ensure_model_downloaded)`
+  - Starts `_tmp_cleanup_loop` background task (deletes `.jpg`/`.png` files older than 2h every 30 min)
 - Mounts `/tmp` as static file server
 
 ### `api/routes.py`

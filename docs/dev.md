@@ -1,273 +1,238 @@
-# Ghibli Portrait API - Developer Documentation
+# Ghibli Portrait API — Developer Reference
 
-FastAPI service for Ghibli-style image transformation and QR code generation with lock screen overlay.
+FastAPI service for Ghibli-style portrait transformation and QR code generation.
+
+---
 
 ## Quick Start
 
 ```bash
-# Install dependencies
 uv sync
-
-# Set up environment variables
 cp .env.example .env
-# Edit .env with your KIE_API_KEY and other settings
+# Edit .env — set KIE_API_KEY, DOMAIN, KIE_GHIBLI_MODEL, KIE_COMPOSE_MODEL
 
-# Run the server
-uvicorn src.ghibli_portrait.main:app --reload
+uv run uvicorn src.ghibli_portrait.main:app --host 0.0.0.0 --port 8010 --log-level info
 ```
 
-## API Endpoints
+Swagger UI: `http://localhost:8010/docs`
 
-### Health Check
-```
-GET /health
-```
-Returns service liveness status.
+---
 
-**Response:**
+## Environment Variables
+
+```env
+# Required
+DOMAIN=https://your-domain.com        # Public URL — used for webhook callback and static file URLs
+KIE_API_KEY=your_key
+
+# Models
+KIE_GHIBLI_MODEL=flux-kontext-pro     # Stage 1 (portrait → Ghibli). flux-kontext-pro recommended.
+KIE_COMPOSE_MODEL=seedream/4.5-edit   # Stage 2 (Ghibli + QR composition)
+
+# Validation
+REQUIRE_HUMAN_FACE=true
+MAX_FACES=1
+MIN_FACE_AREA_RATIO=0.03
+ENABLE_IDENTITY_CHECK=false
+
+# Stage 1 qwen-specific controls (ignored by flux-kontext)
+STAGE1_GUIDANCE_SCALE=4.0
+STAGE1_NUM_INFERENCE_STEPS=28
+STAGE1_ACCELERATION=none
+KIE_SEED=42
+KIE_OUTPUT_FORMAT=jpeg
+KIE_IMAGE_SIZE=square
+```
+
+---
+
+## Response Envelope
+
+All endpoints return the same unified JSON structure.
+
+**Success:**
 ```json
 {
-  "code": 200,
-  "data": {
-    "status": "healthy",
-    "timestamp": "2025-12-28T12:00:00"
-  },
-  "message": "Service is running"
+  "success": true,
+  "data": { ... },
+  "message": "Human-readable message",
+  "errors": null,
+  "timestamp": "2026-05-12T10:00:00.000Z"
 }
 ```
 
-### Ghibli Portrait Generation
+**Error:**
+```json
+{
+  "success": false,
+  "data": null,
+  "message": "High-level summary",
+  "errors": [
+    {
+      "code": "NO_FACE_DETECTED",
+      "type": "VALIDATION_ERROR",
+      "stage": "STAGE1_GHIBLI",
+      "field": "imgUrl",
+      "message": "No human face detected in the image"
+    }
+  ],
+  "timestamp": "2026-05-12T10:00:00.000Z"
+}
 ```
-POST /ghibli
+
+---
+
+## API Endpoints
+
+All endpoints are prefixed with `/v1`.
+
+### `GET /v1/health`
+
+Liveness probe.
+
+```json
+{ "success": true, "data": { "status": "healthy" }, "message": "Ghibli Portrait API V1 is running", ... }
 ```
-Transforms images to Ghibli-style art using external KIE API (model: `seedream/4.5-edit`).
+
+---
+
+### `POST /v1/ghibli-qr` — Primary endpoint
+
+Full two-stage pipeline: portrait → Ghibli → compose with QR lock screen.
 
 **Request:**
 ```json
 {
-  "img_urls": ["https://example.com/image.jpg"],
-  "prompt": "Convert this image to Ghibli style art.",
-  "quality": "basic",  // "basic" (2K) or "high" (4K)
-  "aspect_ratio": "1:1"  // Options: 1:1, 4:3, 3:4, 16:9, 9:16, 2:3, 3:2, 21:9
+  "imgUrl": "https://example.com/portrait.jpg",
+  "url": "https://your-profile.com"
 }
 ```
 
 **Response:**
 ```json
 {
-  "code": 200,
+  "success": true,
   "data": {
-    "result_urls": ["https://example.com/generated.jpg"],
-    "cost_time": 45,
+    "resultUrls": ["https://your-domain.com/tmp/...jpg"],
     "model": "seedream/4.5-edit",
+    "costTime": 95,
     "quality": "basic",
-    "aspect_ratio": "1:1"
+    "aspectRatio": "1:1"
   },
-  "message": "Task completed successfully"
+  "message": "Ghibli + QR pipeline completed successfully",
+  "errors": null,
+  "timestamp": "..."
 }
 ```
 
-**Notes:**
-- Async operation - waits for KIE API callback
-- Uses webhook at `/ghibli/callback` (internal)
-- Default timeout: 300 seconds (5 minutes)
+---
 
-### Ghibli Webhook (Internal)
-```
-POST /ghibli/callback
-```
-Receives callbacks from KIE API. **Not for direct use.**
+### `POST /v1/ghibli`
 
-### QR Code Generation
+Transform a single portrait to Ghibli style (Stage 1 only, no QR).
+
+**Request:**
+```json
+{
+  "imgUrls": ["https://example.com/portrait.jpg"],
+  "prompt": "...",
+  "quality": "basic",
+  "aspectRatio": "1:1"
+}
 ```
-POST /qr-lock
-```
-Generates QR code embedded in lock screen image with optional URL shortening.
+
+**Response:** Same envelope, `data.resultUrls` contains the Ghibli image URL.
+
+---
+
+### `POST /v1/qr-lock`
+
+Generate a QR code embedded in the lock screen overlay image.
 
 **Request:**
 ```json
 {
   "url": "https://example.com",
-  "version": 1,  // Optional: 1-40, auto-determined if null
-  "shorten_url": true  // Optional: if true, URL is shortened before encoding in QR
+  "version": null,
+  "shortenUrl": false
 }
 ```
 
 **Response:**
 ```json
 {
-  "code": 200,
+  "success": true,
   "data": {
-    "qr_url": "https://your-domain.com/tmp/{uuid}.png",
-    "encoded_url": "https://example.com",
-    "short_url": {  // Present only if shorten_url was true
-      "url": "https://your-domain.com/s/{code}",
-      "code": "{short_code}"
-    }
+    "qrUrl": "https://your-domain.com/tmp/{uuid}.png",
+    "encodedUrl": "https://example.com",
+    "shortUrl": { "url": "...", "code": "..." }
   },
-  "message": "QR/Lock image created successfully."
+  ...
 }
 ```
 
-**Notes:**
-- When `shorten_url` is true, the QR code encodes the shortened URL instead of the original
-- URL shortening uses deterministic hashing - same URL always produces same short code
+---
 
-### Delete QR Image
-```
-DELETE /qr-lock/{img_id}
-```
-Deletes generated QR code image by ID (with or without .png extension).
+### `DELETE /v1/qr-lock/{imgId}`
 
-**Response:**
-```json
-{
-  "code": 200,
-  "data": {
-    "deleted_id": "{uuid}"
-  },
-  "message": "Image {uuid} deleted successfully"
-}
-```
+Delete a generated QR image by UUID (with or without `.png` extension).
 
-### Get Shortened URL
-```
-GET /qr-url/?url={url}
-```
-Returns a shortened URL for any given URL using deterministic hashing.
+---
 
-**Request:**
-```
-GET /qr-url/?url=https://example.com/very/long/path
-```
+### `GET /v1/qr-url/?url={url}`
 
-**Response:**
-```json
-{
-  "code": 200,
-  "data": {
-    "url": "https://your-domain.com/s/{code}",
-    "code": "{short_code}"
-  },
-  "message": "Short URL is retrieved successfully"
-}
-```
+Deterministic URL shortening. Same URL always returns the same short code.
 
-**Important Notes:**
-- **No validation performed**: This endpoint always returns a short code, even for invalid or non-existent URLs
-- **Deterministic**: The same URL will always produce the same short code
-- **Idempotent**: Can be called multiple times for the same URL without side effects
-- **No persistence check**: Returns short code regardless of whether the URL was previously shortened
+---
 
-### Automated Ghibli + QR Pipeline
-```
-POST /ghibli-qr
-```
-Fully automated pipeline that:
-1. Transforms input image to Ghibli style
-2. Generates QR code with lock screen overlay
-3. Combines Ghibli image with QR lock screen
-4. Returns final composite image URL
+### `POST /v1/ghibli/callback` — Internal
 
-**Request:**
-```json
-{
-  "img_url": "https://example.com/photo.jpg",
-  "url": "https://example.com/destination"
-}
-```
+KIE webhook endpoint. Do not call directly. Receives task completion notifications from KIE.ai and resolves the waiting `asyncio.Future` in the pipeline.
 
-**Response:**
-```json
-{
-  "code": 200,
-  "data": {
-    "result_urls": ["https://example.com/final-ghibli-qr.jpg"],
-    "cost_time": 95,
-    "model": "seedream/4.5-edit",
-    "quality": "basic",
-    "aspect_ratio": "1:1"
-  },
-  "message": "Task completed successfully"
-}
-```
+---
 
-**Notes:**
-- Executes two image generation tasks sequentially
-- Total cost_time includes both transformations
-- Uses predefined prompts from settings (PROMPT_PIC_TO_GHIBLI, PROMPT_GHIBLI_LOCK)
-- Automatically cleans up intermediate QR lock image reference
+## Error Codes
 
+| Code | HTTP | Stage | Cause |
+|------|------|-------|-------|
+| `INVALID_IMAGE_URL` | 422 | SOURCE_RESOLUTION | Malformed or non-public URL |
+| `IMAGE_DOWNLOAD_FAILED` | 422 | SOURCE_RESOLUTION | Could not download image |
+| `NO_FACE_DETECTED` | 422 | STAGE1_GHIBLI | No human face in image |
+| `MULTIPLE_FACES` | 422 | STAGE1_GHIBLI | Multiple prominent faces detected |
+| `FACE_DETECTOR_FAILURE` | 500 | STAGE1_GHIBLI | MediaPipe runtime error |
+| `STAGE1_API_ERROR` | 500 | STAGE1_GHIBLI | KIE rejected Stage 1 submission |
+| `STAGE1_TASK_FAILED` | 500 | STAGE1_GHIBLI | Stage 1 generation failed |
+| `STAGE1_TIMEOUT` | 504 | STAGE1_GHIBLI | No webhook received within 10 min |
+| `STAGE2_API_ERROR` | 500 | STAGE2_QR | KIE rejected Stage 2 submission |
+| `STAGE2_TASK_FAILED` | 500 | STAGE2_QR | Stage 2 composition failed |
+| `STAGE2_TIMEOUT` | 504 | STAGE2_QR | No webhook received within 10 min |
+| `IDENTITY_DRIFT_DETECTED` | 500 | STAGE1_GHIBLI | Person identity not preserved after retry |
+| `INTERNAL_ERROR` | 500 | ORCHESTRATION | Unhandled server exception |
 
-## Configuration
-
-Environment variables (`.env`):
-```
-KIE_API_KEY=your_api_key
-DOMAIN=https://your-domain.com
-KIE_IMG_MODEL=seedream/4.5-edit
-SHORT_CODE_LENGTH=8
-```
-
-## Development
-
-**Commit Messages:**
-Project uses `gipt` for AI-generated commits with gitmoji style.
-
-**Dependencies:**
-- FastAPI + Uvicorn
-- python-dotenv
-- httpx (for external API calls)
-- Pillow (for image processing)
-- qrcode (for QR generation)
-
-
-## Key Behaviors
-
-1. **Async Ghibli Processing:**
-   - POST `/ghibli` initiates task with KIE API
-   - Server waits for callback at `/ghibli/callback`
-   - Tracks pending tasks in memory
-   - Returns final result or timeout error (300s default)
-
-2. **QR Code Storage:**
-   - Images saved to `src/static/tmp/`
-   - Publicly accessible via server
-   - Manual cleanup via DELETE endpoint
-
-3. **URL Shortening:**
-   - Deterministic hashing: same URL always produces same short code
-   - No validation or persistence checks performed
-   - Works for any URL (valid or invalid, existing or non-existing)
-   - Optional integration with QR code generation
-
-4. **Lock Screen Overlay:**
-   - Base lock image: `src/static/lock.png`
-   - QR code embedded at calculated position
-   - Output: PNG with transparency
-
-5. **Automated Pipeline (`/ghibli-qr`):**
-   - Step 1: Transform input image to Ghibli style
-   - Step 2: Generate QR lock screen image
-   - Step 3: Combine Ghibli image with QR lock overlay
-   - Sequential task execution with separate callbacks
-   - Aggregates total processing time from both transformations
-   - Returns final composite image URL
+---
 
 ## Troubleshooting
 
-**Callback timeout:**
-- Check `KIE_API_KEY` is valid
-- Verify `DOMAIN` is publicly accessible
-- Review webhook endpoint logs
+**`STAGE1_TIMEOUT` / `STAGE2_TIMEOUT`**
+- Check `DOMAIN` in `.env` matches the public URL exactly (no trailing slash)
+- Restart server after changing `DOMAIN`
+- For local dev: verify ngrok is running and dashboard at `http://127.0.0.1:4040` shows requests arriving
 
-**QR generation fails:**
-- Ensure `src/static/lock.png` exists
-- Check write permissions for `tmp/` directory
-- Verify URL length vs QR version
+**`NO_FACE_DETECTED`**
+- Image must be a real photo with a visible human face
+- Face may be too small (`MIN_FACE_AREA_RATIO=0.03`), heavily obscured, or at an extreme angle
 
-## API Documentation
+**`FACE_DETECTOR_FAILURE`**
+- Server couldn't reach `storage.googleapis.com` at startup to download MediaPipe model
+- Check `src/ghibli_portrait/models/blaze_face_short_range.tflite` exists
 
-Interactive docs available when server is running:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+**Identity drift (person looks different after Stage 1)**
+- Switch to `flux-kontext-pro`: `KIE_GHIBLI_MODEL=flux-kontext-pro`
+- `qwen/image-edit` has known identity drift — it is a legacy fallback only
+
+**`ModuleNotFoundError: No module named 'src.ghibli_portrait'`**
+- Run uvicorn from the `ghibli_qr/` directory, not from `ghibli/`
+
+**Do not use `--workers N > 1`**
+- `pending_tasks` is in-memory — webhooks arriving at a different worker will never resolve → timeout
+- Single worker handles many concurrent requests fine via asyncio

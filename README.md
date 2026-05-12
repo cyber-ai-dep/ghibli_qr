@@ -103,10 +103,10 @@ Set `KIE_GHIBLI_MODEL` in `.env`. The code handles both payload structures autom
 ### Prompt System (Stage 1)
 
 **Positive prompt:**
-> *"Transform this portrait into a gentle Studio Ghibli style illustration. Faithfully preserve the person's exact face features, skin tone, face shape, hairstyle, and expression. Apply only light Ghibli stylization: clean soft lines, smooth skin — absolutely no heavy anime exaggeration. Flat solid background color RGB(238, 240, 248). No shadows, no gradients, no scenery, no patterns, no background elements."*
+> *"Convert this portrait to Studio Ghibli illustration style — hand-drawn, painterly, Hayao Miyazaki film aesthetic. Realistic facial proportions, natural-sized eyes, soft warm tones. Not anime. Preserve the person's exact face, skin tone, features, hairstyle, and expression — do not change them. Keep exact skin tone and complexion — do not lighten or darken. Flat solid background RGB(238, 240, 248). No shadows, no gradients, no scenery."*
 
 **Negative prompt** (applied when supported by the model):
-> *"generic anime face, identity drift, race change, skin tone change, beautification, face replacement, facial simplification, cartoon redesign, different person, altered ethnicity, altered hairstyle, altered expression, gradient background, colored background, scenery, landscape, sky, outdoors, shadows, gradients, patterns, decorative background, background objects"*
+> *"anime style, manga style, large anime eyes, big eyes, anime proportions, generic anime face, identity drift, skin tone change, skin lightening, skin whitening, skin darkening, face replacement, different person, altered ethnicity, altered hairstyle, gradient background, scenery, outdoors, shadows, gradients"*
 
 ### Fidelity Parameters (qwen)
 
@@ -127,7 +127,7 @@ Set `KIE_GHIBLI_MODEL` in `.env`. The code handles both payload structures autom
 
 ## Stage 1: Human Portrait Validation
 
-Uses **MediaPipe BlazeFace** (CPU-only). Model auto-downloaded on first use to `src/ghibli_portrait/models/`.
+Uses **MediaPipe BlazeFace** (CPU-only). Model pre-downloaded at server startup to `src/ghibli_portrait/models/`.
 
 ### Acceptance Rules
 
