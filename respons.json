@@ -1,0 +1,28 @@
+{
+  "success": true,
+  "data": {
+    "resultUrls": [
+      "https://tempfile.aiquickdraw.com/seedream4.5/1778482911780-n0623bsduj.jpeg"
+    ],
+    "model": "seedream/4.5-edit",
+    "costTime": 63,
+    "quality": "basic",
+    "aspectRatio": "1:1",
+    "timings": {
+      "validation": 0.285,
+      "stage1_api_submit": 1.041,
+      "qr_generation": 0.136,
+      "stage1_wait": 9.384,
+      "stage1_rehost": 0.759,
+      "identity_check": 0,
+      "stage2_api_submit": 0.488,
+      "stage2_wait": 55.39,
+      "stage1_model_ms": 8,
+      "stage2_model_ms": 55,
+      "total": 67.482
+    }
+  },
+  "message": "Ghibli + QR pipeline completed successfully",
+  "errors": null,
+  "timestamp": "2026-05-11T07:02:03.017Z"
+}

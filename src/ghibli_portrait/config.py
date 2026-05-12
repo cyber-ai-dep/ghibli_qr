@@ -66,33 +66,9 @@ class Settings:
 
     # Prompts
     PROMPT_PIC_TO_GHIBLI = (
-        "Transform this EXACT input image into Studio Ghibli style.\n\n"
-        "STRICT RULES:\n"
-        "Preserve the exact same person.\n"
-        "Preserve exact identity.\n"
-        "Preserve exact face structure.\n"
-        "Preserve exact skin tone.\n"
-        "Preserve exact ethnicity.\n"
-        "Preserve exact race.\n"
-        "Preserve exact hairstyle.\n"
-        "Preserve exact facial hair.\n"
-        "Preserve exact expression.\n"
-        "Preserve exact clothing.\n"
-        "Preserve exact pose.\n"
-        "Preserve exact hands.\n"
-        "Preserve exact background.\n"
-        "Preserve exact composition.\n\n"
-        "ONLY change artistic style to hand-drawn Studio Ghibli illustration.\n\n"
-        "DO NOT redesign the character.\n"
-        "DO NOT replace the face.\n"
-        "DO NOT beautify.\n"
-        "DO NOT make anime generic face.\n"
-        "DO NOT lighten skin.\n"
-        "DO NOT darken skin.\n"
-        "DO NOT change ethnicity.\n"
-        "DO NOT change race.\n"
-        "DO NOT alter facial proportions.\n\n"
-        "Output must be the SAME person, only in Ghibli style."
+        "Convert this image to Ghibli style art  ,"  
+        "Use a clean solid background RGB(238, 240, 248) "
+
     )
 
     # Negative prompt for Stage 1 — passed when the model supports it.
@@ -107,4 +83,5 @@ class Settings:
         "Keep the Studio Ghibli animated illustration style throughout. Ensure the face and head "
         "remain clearly visible and unobstructed. The QR code must stay sharp, high-contrast, "
         "square, and scannable."
+        "Use a clean solid background RGB(99, 99, 99) "
     )
