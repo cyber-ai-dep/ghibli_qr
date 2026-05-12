@@ -35,6 +35,11 @@ MAX_FACES=1
 MIN_FACE_AREA_RATIO=0.03
 ENABLE_IDENTITY_CHECK=false
 
+# Concurrency — max simultaneous MediaPipe face-detection operations
+# Lower = less CPU on shared server, more queue wait (~2.5s per slot)
+# Examples: 5 = ~5% CPU peak, 15 = ~15% (default), 30 = ~30%
+MAX_MEDIAPIPE_CONCURRENCY=15
+
 # Stage 1 qwen-specific controls (ignored by flux-kontext)
 STAGE1_GUIDANCE_SCALE=4.0
 STAGE1_NUM_INFERENCE_STEPS=28

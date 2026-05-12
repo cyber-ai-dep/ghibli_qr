@@ -82,9 +82,24 @@ All network I/O uses **httpx async** — the event loop is never blocked by HTTP
 |---|---|---|
 | Image download (validation, rehost) | async event loop (httpx) | ~1-10s |
 | KIE.ai API submission | async event loop (httpx) | ~1-2s |
-| MediaPipe face detection | thread pool | ~2s |
+| MediaPipe face detection | thread pool + semaphore | ~2s |
 | PIL resize + JPEG save | thread pool | ~0.5s |
 | Waiting for KIE webhook | async Future (zero cost) | 30-120s |
+
+### MediaPipe Concurrency Semaphore
+
+`asyncio.Semaphore(MAX_MEDIAPIPE_CONCURRENCY)` wraps the face-detection step in both pipeline endpoints. This caps the number of simultaneous CPU-heavy MediaPipe operations regardless of how many requests arrive at once.
+
+```
+500 requests arrive simultaneously (MAX_MEDIAPIPE_CONCURRENCY=15):
+
+├── 15 enter MediaPipe immediately  → CPU ~15%
+├── 485 wait in async queue         → CPU 0%, zero threads used
+├── Every ~2.5s: 15 slots free → next 15 proceed
+└── All 500 then await KIE async    → CPU 0%
+```
+
+Tune `MAX_MEDIAPIPE_CONCURRENCY` in `.env` to balance throughput vs CPU load on shared servers (default `15`).
 
 **Single-process limitation**: `pending_tasks` is an in-memory dict — all requests must hit the same process. Horizontal scaling (multiple workers/instances) requires replacing it with Redis pub/sub. See [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) for the scaling path.
 
@@ -267,6 +282,10 @@ SHORT_CODE_LENGTH=8
 # Identity drift check (enable when using flux-kontext)
 ENABLE_IDENTITY_CHECK=false
 
+# Concurrency — max simultaneous MediaPipe face-detection operations
+# Lower = less CPU pressure on shared servers, more queue wait (~2.5s/slot)
+MAX_MEDIAPIPE_CONCURRENCY=15
+
 # Stage 1 quality controls (qwen only)
 STAGE1_GUIDANCE_SCALE=4.0
 STAGE1_NUM_INFERENCE_STEPS=28
@@ -303,6 +322,7 @@ ngrok http 8010
 | `MIN_FACE_AREA_RATIO` | No | `0.03` | Minimum face-to-image area ratio |
 | `SHORT_CODE_LENGTH` | No | `8` | URL shortener code length |
 | `ENABLE_IDENTITY_CHECK` | No | `false` | Post-generation identity drift detection |
+| `MAX_MEDIAPIPE_CONCURRENCY` | No | `15` | Max simultaneous MediaPipe operations — tune to cap CPU on shared servers |
 | `STAGE1_GUIDANCE_SCALE` | No | `4.0` | Qwen guidance scale |
 | `STAGE1_NUM_INFERENCE_STEPS` | No | `28` | Qwen inference steps |
 | `STAGE1_ACCELERATION` | No | `none` | Qwen acceleration (`none`/`regular`/`high`) |

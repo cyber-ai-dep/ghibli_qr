@@ -41,11 +41,38 @@ loop.set_default_executor(ThreadPoolExecutor(max_workers=100))
 
 The default Python pool is `min(32, cpu+4)` — on a 4-core machine that's 8 threads. This saturates almost instantly under any real load.
 
+### MediaPipe Concurrency Semaphore
+
+An `asyncio.Semaphore` wraps the face-detection call in both pipeline endpoints:
+
+```python
+# routes.py — module level
+_mediapipe_sem = asyncio.Semaphore(int(s.MAX_MEDIAPIPE_CONCURRENCY))  # default 15
+
+# inside automated_pipeline and transform2ghibli
+async with _mediapipe_sem:
+    validation_result = await validate_real_human_image_async(url, settings=s)
+```
+
+This caps concurrent CPU usage regardless of thread pool size. Requests beyond the limit wait in the asyncio event loop (zero threads, zero CPU) until a slot opens (~2.5s per slot).
+
+**Why semaphore and not just reducing thread pool size?**
+The thread pool is shared by PIL and QR generation too. Reducing it would also throttle those operations. The semaphore targets only MediaPipe.
+
+**Tuning `MAX_MEDIAPIPE_CONCURRENCY` (set in `.env`):**
+
+| Value | Peak CPU | Extra wait at 100 req | Use case |
+|---|---|---|---|
+| `5` | ~5% | ~50s | Heavily shared server |
+| `15` | ~15% | ~17s | Default — shared server |
+| `30` | ~30% | ~8s | Dedicated server, high load |
+| `100` | ~100% | ~0s | No limit (same as before) |
+
 ### Thread Occupation Per Request — Before vs After
 
 The core improvement: network I/O no longer occupies threads. Threads are reserved for CPU work only.
 
-| Phase | Before (nouha) | After (mohammad) |
+| Phase | Before (fix/ghibli-pipeline) | After (mohammad) |
 |---|---|---|
 | Image download — validation | ~10s in thread (`requests`) | 0s — async httpx |
 | MediaPipe face detection | ~2s in thread | ~2s in thread (CPU, unavoidable) |
@@ -57,26 +84,21 @@ The core improvement: network I/O no longer occupies threads. Threads are reserv
 | Identity check compute | ~2s in thread | ~2s in thread (CPU, unavoidable) |
 | Stage 2 API submission | ~2s in thread (`requests`) | 0s — async httpx |
 | Waiting for Stage 2 webhook | 0s (async Future) | 0s (async Future) |
-| **Total thread time per request** | **~34s** | **~4.5s** |
+| **Total thread time per request** | **~34s** | **~2.5s** |
 
 > Note: identity check is disabled by default (`ENABLE_IDENTITY_CHECK=false`). Without it, total thread time is ~2.5s per request.
 
 ### Concurrent Request Capacity
 
-Thread time directly determines how many requests can be in-flight simultaneously without queueing:
-
 ```
-Concurrent capacity = thread_pool_size / thread_time_per_request
+Before (fix/ghibli-pipeline):
+  8 threads / 34s thread time = ~0.2 req/s → 2-3 simultaneous requests max
 
-Before:  8 threads  /  34s  =  ~0.2 req/s  →  only 2-3 simultaneous requests
-After:  100 threads /  2.5s  =  ~40 req/s  →  ~40 requests simultaneously without any queueing
+After (mohammad):
+  Semaphore(15) / 2.5s thread time = 6 req/s through MediaPipe
+  → requests queue in async (zero cost), all then await KIE async
+  → real bottleneck at high load is KIE API rate limits, not the server
 ```
-
-In practice: each request spends 60-180s waiting for KIE webhooks (async, zero resources). The thread pool is only occupied during the ~2.5s CPU phase. With 100 threads and 2.5s per request:
-
-- 100 concurrent requests → all start without waiting
-- 500 concurrent requests → ~400 wait ~2.5s in the thread queue, then all proceed to await KIE async
-- The real bottleneck at 500+ is KIE API rate limits, not the server
 
 ### Single-Process Constraint
 
