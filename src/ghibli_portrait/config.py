@@ -75,26 +75,37 @@ class Settings:
 
     # Prompts
     PROMPT_PIC_TO_GHIBLI = (
-        "Convert this portrait to Studio Ghibli illustration style — hand-drawn, painterly, Hayao Miyazaki film aesthetic. "
-        "Realistic facial proportions, natural-sized eyes, soft warm tones. Not anime. "
-        "Preserve the person's exact face, skin tone, features, hairstyle, and expression — do not change them. "
-        "Keep exact skin tone and complexion — do not lighten or darken. "
-        "Flat solid background RGB(238, 240, 248). No shadows, no gradients, no scenery."
+        "Convert this photo into a Studio Ghibli hand-painted illustration. "
+        "Apply the full Ghibli visual style: soft watercolor backgrounds, warm painterly color palette, "
+        "clean expressive linework, cel-shaded lighting, lush atmospheric depth, and the characteristic "
+        "hand-drawn Ghibli texture throughout every surface.\n\n"
+        "IDENTITY LOCK — never change these:\n"
+        "Same person, same face structure, same skin tone, same ethnicity, same race.\n"
+        "Same hairstyle, same facial hair, same expression.\n"
+        "Same clothing, same pose, same hands, same background composition.\n\n"
+        "STYLE CHANGE — only these:\n"
+        "Render everything as a hand-painted Ghibli illustration.\n"
+        "Apply Ghibli color grading, line art, and painterly texture.\n"
+        "Make it look like a frame from a Studio Ghibli film.\n\n"
+        "DO NOT: replace the face, change ethnicity, lighten/darken skin, "
+        "use a generic anime face, beautify, or alter facial proportions.\n\n"
+        "Result: the exact same person rendered as a Ghibli film character."
+        "Flat solid background RGB(255, 255, 255). No shadows, no gradients, no scenery."
     )
 
     # Negative prompt for Stage 1 — passed when the model supports it (qwen).
     # flux-kontext models ignore this field entirely.
     NEGATIVE_PROMPT_PIC_TO_GHIBLI = (
-        "anime style, manga style, large anime eyes, big eyes, anime proportions, "
-        "generic anime face, identity drift, skin tone change, skin lightening, skin whitening, skin darkening, "
-        "face replacement, different person, altered ethnicity, altered hairstyle, "
-        "gradient background, scenery, outdoors, shadows, gradients"
+        "photorealistic, photograph, realistic lighting, camera photo, "
+        "generic anime face, identity drift, race change, skin tone change, beautification, "
+        "face replacement, facial simplification, different person, "
+        "altered ethnicity, altered hairstyle, altered expression"
     )
 
     PROMPT_GHIBLI_LOCK = (
         "The person is holding a colorful lock-shaped QR sign with both hands at torso level. "
         "Keep the Studio Ghibli animated illustration style throughout. Ensure the face and head "
         "remain clearly visible and unobstructed. The QR code must stay sharp, high-contrast, "
-        "square, and scannable. "
-        "Flat solid background color RGB(238, 240, 248). No shadows, no gradients, no scenery."
+        "square, and scannable."
+        "Use a clean solid background RGB(255, 255, 255). No shadows, no gradients, no scenery."
     )
