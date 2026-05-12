@@ -48,6 +48,9 @@ class Settings:
     MAX_FACES = int(os.getenv("MAX_FACES", "1"))
     # Minimum face area ratio (face_bbox_area / image_area). Helps reject tiny/far faces.
     MIN_FACE_AREA_RATIO = float(os.getenv("MIN_FACE_AREA_RATIO", "0.03"))
+    # Max concurrent MediaPipe face-detection operations.
+    # Controls CPU ceiling on shared servers: lower = less CPU, more queue wait (~2.5s/slot).
+    MAX_MEDIAPIPE_CONCURRENCY = int(os.getenv("MAX_MEDIAPIPE_CONCURRENCY", "15"))
 
     # Enable post-generation identity drift check. Disable when using a model that
     # consistently triggers false positives (e.g. qwen/image-edit with Ghibli style).

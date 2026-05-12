@@ -82,6 +82,11 @@ router = APIRouter(prefix="/v1")
 pending_tasks: Dict[str, asyncio.Future] = {}
 s = Settings()
 
+# Limits concurrent MediaPipe executions to cap CPU usage on shared servers.
+# Requests beyond this limit queue and proceed as slots free (~2.5s per slot).
+# Tune via MAX_MEDIAPIPE_CONCURRENCY env var (default 15).
+_mediapipe_sem = asyncio.Semaphore(int(s.MAX_MEDIAPIPE_CONCURRENCY))
+
 _DOWNLOAD_HEADERS = {"User-Agent": "ghibli-qr/0.1"}
 
 
@@ -164,7 +169,8 @@ async def transform2ghibli(request: Image2GhibliRequest):
             )
 
         # Async download + MediaPipe in thread (no event loop blocking)
-        validation_result = await validate_real_human_image_async(request.img_urls[0], settings=s)
+        async with _mediapipe_sem:
+            validation_result = await validate_real_human_image_async(request.img_urls[0], settings=s)
         if not validation_result.ok:
             return JSONResponse(
                 status_code=422,
@@ -446,8 +452,10 @@ async def automated_pipeline(request: GhibliQRRequest):
     try:
         # ---------------------------------------------------------------------
         # Layers 1,2,3A: validate (async download + MediaPipe in thread)
+        # Semaphore caps concurrent CPU usage — queue clears every ~2.5s.
         # ---------------------------------------------------------------------
-        validation_result = await validate_real_human_image_async(request.img_url, settings=s)
+        async with _mediapipe_sem:
+            validation_result = await validate_real_human_image_async(request.img_url, settings=s)
         if not validation_result.ok:
             return JSONResponse(
                 status_code=422,
