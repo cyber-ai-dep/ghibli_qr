@@ -38,8 +38,9 @@ class Settings:
     KIE_CREATE_TASK_API = 'https://api.kie.ai/api/v1/jobs/createTask'
 
     # Server Settings
-    DOMAIN = os.getenv("DOMAIN")
-    CALL_BACK = (DOMAIN.rstrip('/') if DOMAIN else "") +  '/v1/ghibli/callback'
+    # .strip() guards against accidental leading/trailing spaces in .env (e.g. "DOMAIN= https://...")
+    DOMAIN = (os.getenv("DOMAIN") or "").strip().rstrip('/')
+    CALL_BACK = DOMAIN + '/v1/ghibli/callback'
 
     # Validation Settings
     # If enabled, requests without a detectable face will be rejected before calling KIE.
@@ -69,7 +70,7 @@ class Settings:
     STAGE1_ACCELERATION = os.getenv("STAGE1_ACCELERATION", "none")
     # Output stability — fixed seed and format for consistent results
     KIE_SEED = int(os.getenv("KIE_SEED", "42"))
-    KIE_OUTPUT_FORMAT = os.getenv("KIE_OUTPUT_FORMAT", "jpeg")
+    KIE_OUTPUT_FORMAT = os.getenv("KIE_OUTPUT_FORMAT", "jpg")
     KIE_IMAGE_SIZE = os.getenv("KIE_IMAGE_SIZE", "square")
 
     # Prompts

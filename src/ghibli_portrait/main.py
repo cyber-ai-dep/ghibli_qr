@@ -43,6 +43,9 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     loop.set_default_executor(ThreadPoolExecutor(max_workers=100))
 
+    # Ensure tmp directory exists (missing on fresh clone → StaticFiles mount fails at startup).
+    s.TMP_PATH.mkdir(parents=True, exist_ok=True)
+
     # Pre-download MediaPipe model so the first request doesn't trigger a download.
     await asyncio.to_thread(_ensure_model_downloaded)
 

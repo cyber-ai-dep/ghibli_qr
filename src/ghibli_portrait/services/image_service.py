@@ -57,7 +57,6 @@ async def generate_img(
             "acceleration": s.STAGE1_ACCELERATION,
             "seed": s.KIE_SEED,
             "image_size": s.KIE_IMAGE_SIZE,
-            "output_format": s.KIE_OUTPUT_FORMAT,
         }
 
         if negative_prompt:
