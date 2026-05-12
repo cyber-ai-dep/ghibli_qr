@@ -311,9 +311,19 @@ uv run uvicorn src.ghibli_portrait.main:app \
 ### Webhook Setup (local development)
 
 ```bash
+# Must specify port 8010 — ngrok defaults to port 80 which will break webhooks
 ngrok http 8010
-# Copy the HTTPS URL → set as DOMAIN in .env → restart server
 ```
+
+Verify the forwarding line shows the correct port:
+```
+Forwarding  https://xxxx.ngrok-free.app -> http://localhost:8010  ✅
+Forwarding  https://xxxx.ngrok-free.app -> http://localhost:80    ❌ wrong port
+```
+
+Then:
+1. Copy the HTTPS URL → set as `DOMAIN` in `.env`
+2. Restart the server (required to reload `DOMAIN` and rebuild the callback URL)
 
 ---
 
