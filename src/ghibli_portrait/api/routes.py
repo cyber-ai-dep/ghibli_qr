@@ -169,8 +169,8 @@ async def transform2ghibli(request: Image2GhibliRequest):
             )
 
         # Async download + MediaPipe in thread (no event loop blocking)
-        async with _mediapipe_sem:
-            validation_result = await validate_real_human_image_async(request.img_urls[0], settings=s)
+        # Semaphore passed in — applied only around MediaPipe (~2s), not download (~10s)
+        validation_result = await validate_real_human_image_async(request.img_urls[0], settings=s, mediapipe_sem=_mediapipe_sem)
         if not validation_result.ok:
             return JSONResponse(
                 status_code=422,
@@ -452,10 +452,10 @@ async def automated_pipeline(request: GhibliQRRequest):
     try:
         # ---------------------------------------------------------------------
         # Layers 1,2,3A: validate (async download + MediaPipe in thread)
-        # Semaphore caps concurrent CPU usage — queue clears every ~2.5s.
+        # Semaphore passed in — applied only around MediaPipe (~2s), not download (~10s).
+        # Downloads run concurrently with no limit (async, zero CPU).
         # ---------------------------------------------------------------------
-        async with _mediapipe_sem:
-            validation_result = await validate_real_human_image_async(request.img_url, settings=s)
+        validation_result = await validate_real_human_image_async(request.img_url, settings=s, mediapipe_sem=_mediapipe_sem)
         if not validation_result.ok:
             return JSONResponse(
                 status_code=422,
