@@ -110,19 +110,21 @@ class ResultUrls(BaseModel):
 
 
 class TaskData(BaseModel):
-    completeTime: int = Field(..., description="Task completion timestamp in milliseconds")
-    consumeCredits: Optional[int] = Field(None, description="Credits consumed for this task")
-    costTime: int = Field(..., description="Time taken in seconds")
-    createTime: int = Field(..., description="Task creation timestamp in milliseconds")
-    model: str = Field(..., description="Model used for generation")
-    param: str = Field(..., description="JSON string of original request parameters")
-    remainedCredits: Optional[int] = Field(None, description="Remaining credits after task")
-    state: TaskState = Field(..., description="Task state: success or fail")
+    model_config = {"extra": "ignore"}
+
     taskId: str = Field(..., description="Unique task identifier")
-    updateTime: int = Field(..., description="Last update timestamp in milliseconds")
-    
+    state: Optional[TaskState] = Field(None, description="Task state: success or fail")
+    completeTime: Optional[int] = Field(None, description="Task completion timestamp in milliseconds")
+    consumeCredits: Optional[int] = Field(None, description="Credits consumed for this task")
+    costTime: int = Field(0, description="Time taken in seconds")
+    createTime: Optional[int] = Field(None, description="Task creation timestamp in milliseconds")
+    model: str = Field("", description="Model used for generation")
+    param: str = Field("", description="JSON string of original request parameters")
+    remainedCredits: Optional[int] = Field(None, description="Remaining credits after task")
+    updateTime: Optional[int] = Field(None, description="Last update timestamp in milliseconds")
+
     resultJson: Optional[str] = Field(None, description="JSON string containing result URLs (success only)")
-    
+
     failCode: Optional[str] = Field(None, description="Error code (failure only)")
     failMsg: Optional[str] = Field(None, description="Error message (failure only)")
     
@@ -142,9 +144,11 @@ class TaskData(BaseModel):
 
 
 class CallbackRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
     code: int = Field(..., description="Response code (200=success, 501=failure)")
     data: TaskData = Field(..., description="Task data")
-    msg: str = Field(..., description="Response message")
+    msg: str = Field("", description="Response message")
     
     @property
     def is_success(self) -> bool:

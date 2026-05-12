@@ -14,12 +14,16 @@ Swagger Tags:
 import asyncio
 import io as _io
 import json
+import logging
 from typing import Dict
 from uuid import uuid4
 
 import httpx
+from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
+
+_log = logging.getLogger(__name__)
 from PIL import Image as _PILImage
 
 from src.ghibli_portrait.api.responses import (
@@ -246,6 +250,9 @@ async def transform2ghibli(request: Image2GhibliRequest):
                 ).model_dump(by_alias=True)
             )
 
+        except asyncio.CancelledError:
+            pending_tasks.pop(task_id, None)
+            raise
         except Exception as e:
             pending_tasks.pop(task_id, None)
             return JSONResponse(
@@ -256,6 +263,8 @@ async def transform2ghibli(request: Image2GhibliRequest):
                 ).model_dump(by_alias=True)
             )
 
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         return JSONResponse(
             status_code=500,
@@ -336,32 +345,38 @@ async def get_qr_lock(req: QRLockRequest):
         500: {"model": ApiErrorResponse, "description": "Task execution failure reported by KIE API"},
     },
 )
-async def webhook(req: CallbackRequest):
+async def webhook(raw_request: Request):
     """Internal webhook endpoint for KIE API callbacks."""
-    task_id = req.data.taskId
-    if task_id in pending_tasks:
-        future = pending_tasks[task_id]
-        pending_tasks.pop(task_id)
-        if not future.done():
-            future.set_result(req)
+    # Parse body manually so we always control the response.
+    # Pydantic validation before the handler would return 422 to KIE on any
+    # missing field, leaving the pending Future unresolved → 600s timeout.
+    try:
+        body = await raw_request.json()
+    except Exception:
+        _log.warning("Webhook: unparseable request body")
+        return JSONResponse(content={"code": 200, "msg": "ok"})
 
-    if req.is_failure:
-        return JSONResponse(
-            status_code=req.code,
-            content=external_error_response(
-                message="Task execution failed",
-                code=req.data.failCode or "TASK_FAILED",
-                stage=ErrorStage.ORCHESTRATION,
-                detail=req.data.failMsg or req.msg,
-            ).model_dump(by_alias=True)
-        )
+    try:
+        req = CallbackRequest.model_validate(body)
+        task_id = req.data.taskId
+        if task_id in pending_tasks:
+            future = pending_tasks.pop(task_id, None)
+            if future and not future.done():
+                future.set_result(req)
+    except Exception as exc:
+        _log.error("Webhook processing error: %s", exc)
+        # Schema validation failed — try to unblock the waiting Future anyway
+        try:
+            task_id = body.get("data", {}).get("taskId")
+            if task_id and task_id in pending_tasks:
+                future = pending_tasks.pop(task_id, None)
+                if future and not future.done():
+                    future.set_exception(ValueError(f"Webhook parse error: {exc}"))
+        except Exception:
+            pass
 
-    return JSONResponse(
-        content=success_response(
-            message="Webhook received successfully",
-            data={"taskId": req.data.taskId},
-        ).model_dump(by_alias=True)
-    )
+    # Always return HTTP 200 to KIE — non-200 may stop KIE from retrying.
+    return JSONResponse(content={"code": 200, "msg": "ok"})
 
 
 @router.delete(
@@ -694,6 +709,8 @@ async def automated_pipeline(request: GhibliQRRequest):
             ).model_dump(by_alias=True)
         )
 
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         return JSONResponse(
             status_code=500,
