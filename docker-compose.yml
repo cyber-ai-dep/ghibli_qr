@@ -1,0 +1,196 @@
+# ============================================================================
+# Docker Compose Configuration for Ghibli Portrait API V1
+# ============================================================================
+# This file orchestrates the containerized FastAPI application.
+# 
+# Features:
+# ✓ Multi-stage build optimization (see Dockerfile)
+# ✓ Environment variable loading from .env file
+# ✓ Health check integration
+# ✓ Volume mounts for temporary files
+# ✓ Automatic restart on failure
+# ✓ JSON logging configuration
+#
+# Prerequisites:
+# - Docker & Docker Compose installed
+# - .env file in the same directory with required variables
+#
+# Quick Start:
+#   docker-compose up -d --build
+#   docker-compose logs -f ghibli-api
+#   curl http://localhost:8010/v1/health
+# ============================================================================
+
+version: '3.8'
+
+services:
+  ghibli-api:
+    # Build configuration
+    build:
+      context: .                    # Use current directory as build context
+      dockerfile: Dockerfile         # Use Dockerfile in current directory
+    
+    # Container naming
+    container_name: ghibli-api-v1   # Friendly name for docker ps
+    
+    # Port mapping
+    # Format: "host_port:container_port"
+    # Access API at http://localhost:8010 on your machine
+    ports:
+      - "8010:8010"
+    
+    # ============================================================================
+    # ENVIRONMENT VARIABLES
+    # ============================================================================
+    # Method 1: Load from .env file (RECOMMENDED)
+    # This reads ALL variables from .env in the same directory
+    # .env is git-ignored for security (contains API keys, tokens, etc.)
+    env_file:
+      - .env
+    
+    # Method 2: Override or add specific variables
+    # These take priority over .env values
+    environment:
+      # Ensure logs are printed immediately (useful for docker logs)
+      PYTHONUNBUFFERED: "1"
+      
+      # Optional: Override .env values here
+      # Example:
+      # DOMAIN: "https://production.example.com"
+      # STAGE1_GUIDANCE_SCALE: "5.0"
+    
+    # ============================================================================
+    # VOLUMES (File System Mounts)
+    # ============================================================================
+    # Mount directories from host to container for persistence
+    volumes:
+      # Temporary generated files (QR codes, rehosted images)
+      # Format: "host_path:container_path"
+      # rw = read-write (default)
+      - ./src/ghibli_portrait/static/tmp:/app/src/ghibli_portrait/static/tmp:rw
+      
+      # Lock screen template (read-only for safety)
+      # ro = read-only (prevents accidental modification)
+      - ./src/ghibli_portrait/static/lock.png:/app/src/ghibli_portrait/static/lock.png:ro
+    
+    # ============================================================================
+    # HEALTH CHECK
+    # ============================================================================
+    # Docker Compose and Kubernetes use this to monitor container health
+    # The container is considered "healthy" if /v1/health returns 200 OK
+    healthcheck:
+      # Test command: GET http://localhost:8010/v1/health
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8010/v1/health', timeout=5)"]
+      
+      # Check every 30 seconds
+      interval: 30s
+      
+      # Fail if response takes longer than 10 seconds
+      timeout: 10s
+      
+      # Number of consecutive failures before marking unhealthy
+      retries: 3
+      
+      # Grace period: wait 40 seconds after start before first check
+      # (allows time for MediaPipe model to download, app to initialize)
+      start_period: 40s
+    
+    # ============================================================================
+    # RESTART POLICY
+    # ============================================================================
+    # Automatically restart container if it crashes
+    # Options:
+    # - no: Do not automatically restart (default)
+    # - always: Always restart if it stops, even on host reboot
+    # - on-failure: Restart only if exit code is non-zero
+    # - unless-stopped: Always restart unless explicitly stopped
+    restart: unless-stopped
+    
+    # ============================================================================
+    # LOGGING
+    # ============================================================================
+    # Configure how Docker Compose handles container logs
+    logging:
+      driver: "json-file"           # Store logs in JSON format on disk
+      options:
+        max-size: "10m"             # Rotate logs when they reach 10MB
+        max-file: "3"               # Keep maximum 3 rotated log files
+        # Total disk usage: 10MB × 3 = 30MB max
+    
+    # ============================================================================
+    # OPTIONAL: Resource Limits (Uncomment to enable)
+    # ============================================================================
+    # Prevent container from consuming excessive resources
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'               # Maximum 2 CPU cores
+    #       memory: 4G              # Maximum 4GB RAM
+    #     reservations:
+    #       cpus: '1'               # Guaranteed 1 CPU core
+    #       memory: 2G              # Guaranteed 2GB RAM
+
+# ============================================================================
+# USEFUL COMMANDS
+# ============================================================================
+# 
+# Start services in background:
+#   docker-compose up -d
+# 
+# Start with fresh build:
+#   docker-compose up -d --build
+# 
+# View live logs:
+#   docker-compose logs -f ghibli-api
+# 
+# View last 100 log lines:
+#   docker-compose logs --tail=100 ghibli-api
+# 
+# Stop services:
+#   docker-compose stop
+# 
+# Stop and remove containers:
+#   docker-compose down
+# 
+# Remove volumes (careful! deletes tmp files):
+#   docker-compose down -v
+# 
+# Execute command in running container:
+#   docker-compose exec ghibli-api bash
+# 
+# Check service status:
+#   docker-compose ps
+# 
+# View container health:
+#   docker inspect ghibli-api-v1 | grep -A 10 '"Health"'
+# 
+# Rebuild image without cache:
+#   docker-compose build --no-cache
+# 
+# ============================================================================
+# TROUBLESHOOTING
+# ============================================================================
+# 
+# Container won't start?
+#   docker-compose logs ghibli-api
+#   Check that .env file exists and has required variables
+# 
+# Health check failing?
+#   docker-compose exec ghibli-api curl http://localhost:8010/v1/health
+#   Check KIE_API_KEY is valid
+#   Check DOMAIN is correct and reachable
+# 
+# Port already in use?
+#   docker ps -a | grep 8010
+#   Change "8010:8010" to "8011:8010" in ports section
+# 
+# Temporary files not persisting?
+#   Verify volumes mount point exists: ls -la src/ghibli_portrait/static/
+#   Check Docker has read/write permissions to the directory
+# 
+# Out of disk space?
+#   docker system prune           # Remove unused images/containers
+#   docker volume prune           # Remove unused volumes
+#   Check log file size: du -sh /var/lib/docker/containers/
+# 
+# ============================================================================
