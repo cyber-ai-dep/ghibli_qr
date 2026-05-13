@@ -4,60 +4,60 @@ Production-ready API for transforming portraits into Ghibli-style art with QR co
 
 ## What It Does
 
-Transforms real portrait photos into hand-drawn Studio Ghibli-style illustrations and generates QR codes embedded in a lock-screen overlay. Features an automated two-stage async pipeline with webhook-based task handling and a non-blocking concurrency model designed for high throughput.
+Transforms real portrait photos into hand-drawn Studio Ghibli-style illustrations and generates QR codes embedded in a lock-screen overlay. Features an automated two-stage async pipeline with webhook-based result delivery.
 
 ---
 
 ## High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │                         LAYER 0: Schema Validation                       │
 │                    (Pydantic: field types, required fields)              │
-└─────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │                      LAYER 1: Source Resolution                          │
 │            (URL format, localhost rejection — no download)               │
-└─────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │                        LAYER 2: Image Decoding                           │
 │               (httpx async download, PIL decode, format check)          │
-└─────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │              LAYER 3A: Stage 1 Validation (Human Portrait)               │
 │        (MediaPipe BlazeFace — CPU-bound, runs in thread pool)            │
-└─────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │                    STAGE 1: Ghibli Transformation                        │
 │        (configurable model — flux-kontext-pro recommended)               │
 │      Strict identity-preserving prompt + fidelity controls               │
 │              httpx async POST to KIE.ai — no thread used                │
-└─────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │              IDENTITY DRIFT CHECK (optional, post-Stage 1)               │
 │     Face presence · Area stability · Skin-tone hue — auto-retry once    │
 │         async download + NumPy/MediaPipe compute in thread pool          │
-└─────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │              LAYER 3B: Stage 2 Validation (Input Trust)                  │
 │            (Stage 1 output is TRUSTED — URL sanity check only)           │
-└─────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │                      STAGE 2: QR Composition                             │
 │              (seedream/4.5-edit — httpx async POST to KIE.ai)           │
-└─────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │                    LAYER 4: Orchestration & Response                     │
 │          (Coordinates stages, formats responses, handles errors)         │
-└─────────────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
 ```
 
 ### Webhook Processing Model
@@ -88,7 +88,7 @@ All network I/O uses **httpx async** — the event loop is never blocked by HTTP
 
 ### MediaPipe Concurrency Semaphore
 
-`asyncio.Semaphore(MAX_MEDIAPIPE_CONCURRENCY)` wraps the face-detection step in both pipeline endpoints. This caps the number of simultaneous CPU-heavy MediaPipe operations regardless of how many requests arrive at once.
+`asyncio.Semaphore(MAX_MEDIAPIPE_CONCURRENCY)` wraps the face-detection step in both pipeline endpoints. This caps the number of simultaneous CPU-heavy MediaPipe operations regardless of how many requests arrive.
 
 ```
 500 requests arrive simultaneously (MAX_MEDIAPIPE_CONCURRENCY=15):
@@ -99,7 +99,7 @@ All network I/O uses **httpx async** — the event loop is never blocked by HTTP
 └── All 500 then await KIE async    → CPU 0%
 ```
 
-The semaphore is applied **only around MediaPipe (~2s)**, not the image download (~10s). Downloads run concurrently with no limit — the slot is held for ~2s instead of ~12s, reducing wait time for 500 requests from ~400s to ~67s.
+The semaphore is applied **only around MediaPipe (~2s)**, not the image download (~10s). Downloads run concurrently with no limit — the slot is held for ~2s instead of ~12s, reducing wait time significantly.
 
 **Tuning `MAX_MEDIAPIPE_CONCURRENCY`:**
 
@@ -110,7 +110,7 @@ The semaphore is applied **only around MediaPipe (~2s)**, not the image download
 | `50` | ~20s | ~50% |
 | `REQUIRE_HUMAN_FACE=false` | ~0s | ~0% |
 
-**Single-process limitation**: `pending_tasks` is an in-memory dict — all requests must hit the same process. Horizontal scaling (multiple workers/instances) requires replacing it with Redis pub/sub. See [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) for the scaling path.
+**Single-process limitation**: `pending_tasks` is an in-memory dict — all requests must hit the same process. Horizontal scaling (multiple workers/instances) requires replacing it with Redis pub/sub.
 
 ---
 
@@ -127,10 +127,10 @@ Set `KIE_GHIBLI_MODEL` in `.env`. The code handles both payload structures autom
 ### Prompt System (Stage 1)
 
 **Positive prompt:**
-> *"Convert this portrait to Studio Ghibli illustration style — hand-drawn, painterly, Hayao Miyazaki film aesthetic. Realistic facial proportions, natural-sized eyes, soft warm tones. Not anime. Preserve the person's exact face, skin tone, features, hairstyle, and expression — do not change them. Keep exact skin tone and complexion — do not lighten or darken. Flat solid background RGB(238, 240, 248). No shadows, no gradients, no scenery."*
+> *"Convert this portrait to Studio Ghibli illustration style — hand-drawn, painterly, Hayao Miyazaki film aesthetic. Realistic facial proportions, natural-sized eyes, soft warm tones. Not anime. Preserve exact identity, exact person, exact face."*
 
 **Negative prompt** (applied when supported by the model):
-> *"anime style, manga style, large anime eyes, big eyes, anime proportions, generic anime face, identity drift, skin tone change, skin lightening, skin whitening, skin darkening, face replacement, different person, altered ethnicity, altered hairstyle, gradient background, scenery, outdoors, shadows, gradients"*
+> *"anime style, manga style, large anime eyes, big eyes, anime proportions, generic anime face, identity drift, skin tone change, skin lightening, skin whitening, skin darkening, face replacement, different person."*
 
 ### Fidelity Parameters (qwen)
 
@@ -344,6 +344,97 @@ Then:
 
 ---
 
+## Docker Deployment
+
+### Prerequisites
+- Docker and Docker Compose installed
+
+### Quick Start
+
+```bash
+# 1. Clone and navigate to project
+git clone https://github.com/cyber-ai-dep/ghibli_qr
+cd ghibli_qr
+
+# 2. Configure environment variables
+cp .env.example .env
+# Edit .env with your values:
+#   DOMAIN=https://your-domain.com
+#   KIE_API_KEY=your_api_key_here
+
+# 3. Build and run with Docker Compose
+docker-compose up -d --build
+
+# 4. Check status
+docker-compose ps
+docker-compose logs -f ghibli-api
+
+# 5. Test the API
+curl http://localhost:8010/v1/health
+```
+
+### Manual Docker Build & Run
+
+```bash
+# Build image
+docker build -t ghibli-api .
+
+# Run container
+docker run -p 8010:8010 --env-file .env ghibli-api
+```
+
+### Useful Docker Commands
+
+```bash
+# View live logs
+docker-compose logs -f ghibli-api
+
+# Restart service
+docker-compose restart
+
+# Stop services
+docker-compose stop
+
+# Stop and remove containers
+docker-compose down
+
+# Execute command in running container
+docker-compose exec ghibli-api bash
+
+# Check container health
+docker inspect ghibli-api-v1 | grep -A 10 '"Health"'
+
+# Remove unused containers/images
+docker system prune
+```
+
+### Troubleshooting
+
+**Port 8010 already in use:**
+```yaml
+# In docker-compose.yml, change:
+ports:
+  - "8011:8010"  # Access at http://localhost:8011
+```
+
+**Health check failing:**
+```bash
+# Check logs
+docker-compose logs ghibli-api
+
+# Verify .env has correct values:
+# - DOMAIN: publicly reachable URL
+# - KIE_API_KEY: valid API key
+```
+
+**Permission denied on volumes:**
+```bash
+# Fix directory permissions
+chmod -R 755 src/ghibli_portrait/static/
+```
+
+---
+
 ## Configuration Reference
 
 | Variable | Required | Default | Description |
@@ -377,6 +468,7 @@ Then:
 - **qrcode** — QR code generation
 - **KIE.ai API** — AI image generation (Flux Kontext / Qwen / Seedream)
 - **uv** — package management and virtual env
+- **Docker & Docker Compose** — containerization and orchestration
 - **Python 3.10+**
 
 ---
@@ -409,6 +501,8 @@ src/ghibli_portrait/
 
 ## Deployment
 
+### Single Process (Required)
+
 ```bash
 # Single worker (required — pending_tasks is in-memory)
 uv run uvicorn src.ghibli_portrait.main:app \
@@ -417,18 +511,14 @@ uv run uvicorn src.ghibli_portrait.main:app \
   --log-level warning
 ```
 
-- **Swagger UI**: http://SERVER_IP:8010/docs
-- **ReDoc**: http://SERVER_IP:8010/redoc
-
-```bash
-# Docker
-docker build -t ghibli-api .
-docker run -p 8010:8010 --env-file .env ghibli-api
-```
-
 **Important**: Do not use `--workers N > 1` or multiple instances without first migrating `pending_tasks` to Redis. Webhooks arriving at a different worker will never resolve the waiting Future.
 
-Deploy to any platform supporting Python (Railway, Render, Fly.io, AWS, GCP, Azure). `DOMAIN` must be publicly reachable for KIE webhook callbacks.
+### Production Platforms
+
+Deploy to any platform supporting Python (Railway, Render, Fly.io, AWS, GCP, Azure). Ensure:
+- `DOMAIN` is publicly reachable for KIE webhook callbacks
+- Environment variables are set (especially `KIE_API_KEY`, `DOMAIN`)
+- Port 8010 is exposed
 
 ---
 
