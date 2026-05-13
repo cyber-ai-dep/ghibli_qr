@@ -22,7 +22,6 @@ from src.ghibli_portrait.services.validation_service import _detect_faces
 
 _logger = logging.getLogger("identity_check")
 
-_DOWNLOAD_HEADERS = {"User-Agent": "ghibli-qr/0.1"}
 _HTTPX_HEADERS = {"User-Agent": "ghibli-qr/0.1"}
 
 

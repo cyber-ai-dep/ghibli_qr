@@ -60,7 +60,8 @@ app = FastAPI(
     lifespan=lifespan,
     title="Ghibli Portrait API V1",
     description="Production-ready Ghibli portrait transformation API with unified response format",
-    version="1.0.0"
+    version="1.0.0",
+    openapi_tags=TAGS_METADATA,
 )
 
 @app.exception_handler(Exception)

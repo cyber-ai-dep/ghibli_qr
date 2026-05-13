@@ -1,9 +1,12 @@
+import logging
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_log = logging.getLogger(__name__)
 
 
 class Settings:
@@ -38,9 +41,8 @@ class Settings:
     KIE_CREATE_TASK_API = 'https://api.kie.ai/api/v1/jobs/createTask'
 
     # Server Settings
-    # .strip() guards against accidental leading/trailing spaces in .env (e.g. "DOMAIN= https://...")
-    DOMAIN = (os.getenv("DOMAIN") or "").strip().rstrip('/')
-    CALL_BACK = DOMAIN + '/v1/ghibli/callback'
+    DOMAIN = os.getenv("DOMAIN")
+    CALL_BACK = (DOMAIN.rstrip('/') if DOMAIN else "") +  '/v1/ghibli/callback'
 
     # Validation Settings
     # If enabled, requests without a detectable face will be rejected before calling KIE.
@@ -70,7 +72,7 @@ class Settings:
     STAGE1_ACCELERATION = os.getenv("STAGE1_ACCELERATION", "none")
     # Output stability — fixed seed and format for consistent results
     KIE_SEED = int(os.getenv("KIE_SEED", "42"))
-    KIE_OUTPUT_FORMAT = os.getenv("KIE_OUTPUT_FORMAT", "jpg")
+    KIE_OUTPUT_FORMAT = os.getenv("KIE_OUTPUT_FORMAT", "jpeg")
     KIE_IMAGE_SIZE = os.getenv("KIE_IMAGE_SIZE", "square")
 
     # Prompts
@@ -89,7 +91,7 @@ class Settings:
         "Make it look like a frame from a Studio Ghibli film.\n\n"
         "DO NOT: replace the face, change ethnicity, lighten/darken skin, "
         "use a generic anime face, beautify, or alter facial proportions.\n\n"
-        "Result: the exact same person rendered as a Ghibli film character."
+        "Result: the exact same person rendered as a Ghibli film character.\n"
         "Flat solid background RGB(255, 255, 255). No shadows, no gradients, no scenery."
     )
 
@@ -106,6 +108,16 @@ class Settings:
         "The person is holding a colorful lock-shaped QR sign with both hands at torso level. "
         "Keep the Studio Ghibli animated illustration style throughout. Ensure the face and head "
         "remain clearly visible and unobstructed. The QR code must stay sharp, high-contrast, "
-        "square, and scannable."
+        "square, and scannable.\n"
         "Use a clean solid background RGB(255, 255, 255). No shadows, no gradients, no scenery."
     )
+
+
+# Warn early so misconfiguration is visible in startup logs, not at first request.
+if not Settings.DOMAIN:
+    _log.warning(
+        "DOMAIN env var is not set. CALL_BACK will be a relative URL and KIE webhooks "
+        "will never reach this server — all tasks will time out."
+    )
+if not Settings.KIE_API_KEY:
+    _log.warning("KIE_API_KEY env var is not set. All image generation requests will fail.")
