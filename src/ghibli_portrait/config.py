@@ -65,7 +65,7 @@ class Settings:
     STAGE1_REFERENCE_STRENGTH = 0.90  # Strong reference/guidance
     # Qwen-specific generation quality controls
     STAGE1_GUIDANCE_SCALE = float(os.getenv("STAGE1_GUIDANCE_SCALE", "7.5"))
-    STAGE1_NUM_INFERENCE_STEPS = int(os.getenv("STAGE1_NUM_INFERENCE_STEPS", "30"))
+    STAGE1_NUM_INFERENCE_STEPS = int(os.getenv("STAGE1_NUM_INFERENCE_STEPS", "20"))
 
     # Prompts
     PROMPT_PIC_TO_GHIBLI = (

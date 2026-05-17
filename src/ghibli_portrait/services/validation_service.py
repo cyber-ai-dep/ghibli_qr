@@ -549,26 +549,30 @@ def validate_stage1_human_portrait(
     if face_detected:
         primary = faces[0]
 
-        # Check for multiple prominent faces
-        # Reject ONLY if secondary face is visually significant:
-        # - area ≥ 65% of primary face area
-        # - confidence ≥ 60% of primary face confidence
+        # Check for multiple prominent faces.
+        # Reject ONLY when secondary face is clearly a real second person:
+        # - area ≥ 80% of primary face area (was 65% — too many false positives)
+        # - confidence ≥ 70% of primary face confidence (was 60%)
+        # - secondary face occupies ≥ 5% of the total image area (new — filters out
+        #   small background faces, reflections, photos-on-walls, printed logos)
         if face_count > 1:
             secondary = faces[1]
             primary_area = primary.get("area", 1.0)
             secondary_area = secondary.get("area", 0.0)
             primary_score = primary.get("score", 1.0)
             secondary_score = secondary.get("score", 0.0)
+            secondary_area_ratio = secondary.get("area_ratio", 0.0)
 
             area_ratio = secondary_area / primary_area if primary_area > 0 else 0.0
             confidence_ratio = secondary_score / primary_score if primary_score > 0 else 0.0
 
-            if area_ratio >= 0.65 and confidence_ratio >= 0.60:
+            if area_ratio >= 0.80 and confidence_ratio >= 0.70 and secondary_area_ratio >= 0.05:
                 _validation_logger.info({
                     "url": image_url,
                     "faceCount": face_count,
                     "secondaryAreaRatio": area_ratio,
                     "secondaryConfidenceRatio": confidence_ratio,
+                    "secondaryAbsoluteAreaRatio": secondary_area_ratio,
                     "decision": "REJECT",
                     "reason": "MULTIPLE_PROMINENT_FACES"
                 })

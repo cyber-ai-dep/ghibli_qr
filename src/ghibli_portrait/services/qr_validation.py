@@ -12,8 +12,19 @@ from qreader import QReader
 
 
 # ---------- CONFIG ----------
-QR_MODEL_SIZE = "l"   # large model for best accuracy
+QR_MODEL_SIZE = "s"   # small model — fast, accurate enough for QR codes
 TMP_DIR = Path("/tmp")
+
+# Module-level singleton — loaded once on first call, reused for all requests.
+# Previously re-created on every call, causing 92MB YOLO reload each time.
+_qreader: QReader | None = None
+
+
+def _get_qreader() -> QReader:
+    global _qreader
+    if _qreader is None:
+        _qreader = QReader(model_size=QR_MODEL_SIZE)
+    return _qreader
 
 
 # ---------- RESULT OBJECT ----------
@@ -83,11 +94,8 @@ def validate_qr_from_image_url(
         image = Image.open(tmp_path).convert("RGB")
         img_np = np.array(image)
 
-        # ---------- INIT QR READER ----------
-        qreader = QReader(model_size=QR_MODEL_SIZE)
-
         # ---------- DETECT & DECODE ----------
-        results = qreader.detect_and_decode(
+        results = _get_qreader().detect_and_decode(
             image=img_np,
             return_detections=True,
         )
