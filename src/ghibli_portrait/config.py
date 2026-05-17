@@ -1,9 +1,12 @@
+import logging
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_log = logging.getLogger(__name__)
 
 
 class Settings:
@@ -48,24 +51,29 @@ class Settings:
     MAX_FACES = int(os.getenv("MAX_FACES", "1"))
     # Minimum face area ratio (face_bbox_area / image_area). Helps reject tiny/far faces.
     MIN_FACE_AREA_RATIO = float(os.getenv("MIN_FACE_AREA_RATIO", "0.03"))
+    # Max concurrent MediaPipe face-detection operations.
+    # Controls CPU ceiling on shared servers: lower = less CPU, more queue wait (~2.5s/slot).
+    MAX_MEDIAPIPE_CONCURRENCY = int(os.getenv("MAX_MEDIAPIPE_CONCURRENCY", "15"))
 
     # Enable post-generation identity drift check. Disable when using a model that
     # consistently triggers false positives (e.g. qwen/image-edit with Ghibli style).
     # Re-enable once a proper img2img model (e.g. flux-kontext-pro) is configured.
     ENABLE_IDENTITY_CHECK = os.getenv("ENABLE_IDENTITY_CHECK", "false").lower() in {"1", "true", "yes"}
 
-    # Stage 1 fidelity controls — balance identity preservation with visible style transfer.
+    # Stage 1 fidelity controls — maximize identity preservation.
     # Passed to the model if supported; silently ignored otherwise.
-    # image_strength/denoise at ~0.65 allow full Ghibli stylization while still referencing
-    # the source face structure. Too low (0.35) and the photo barely changes; identity preserved
-    # but no Ghibli style shows through.
-    STAGE1_IMAGE_STRENGTH = 0.65      # Allow artistic transformation; lower = less change
-    STAGE1_DENOISE = 0.65             # Allow stylistic rendering; lower = closer to photo
-    STAGE1_FIDELITY = 0.90            # High structural fidelity to reference image
-    STAGE1_REFERENCE_STRENGTH = 0.90  # Strong reference/guidance
+    STAGE1_IMAGE_STRENGTH = 0.35      # Low = closer to source (less transformation)
+    STAGE1_DENOISE = 0.30             # Low denoising preserves original structure
+    STAGE1_FIDELITY = 0.95            # High fidelity to reference image
+    STAGE1_REFERENCE_STRENGTH = 0.95  # Max reference/guidance strength
     # Qwen-specific generation quality controls
-    STAGE1_GUIDANCE_SCALE = float(os.getenv("STAGE1_GUIDANCE_SCALE", "7.5"))
-    STAGE1_NUM_INFERENCE_STEPS = int(os.getenv("STAGE1_NUM_INFERENCE_STEPS", "20"))
+    STAGE1_GUIDANCE_SCALE = float(os.getenv("STAGE1_GUIDANCE_SCALE", "4.0"))
+    STAGE1_NUM_INFERENCE_STEPS = int(os.getenv("STAGE1_NUM_INFERENCE_STEPS", "28"))
+    STAGE1_ACCELERATION = os.getenv("STAGE1_ACCELERATION", "none")
+    # Output stability — fixed seed and format for consistent results
+    KIE_SEED = int(os.getenv("KIE_SEED", "42"))
+    KIE_OUTPUT_FORMAT = os.getenv("KIE_OUTPUT_FORMAT", "jpeg")
+    KIE_IMAGE_SIZE = os.getenv("KIE_IMAGE_SIZE", "square")
 
     # Prompts
     PROMPT_PIC_TO_GHIBLI = (
@@ -83,10 +91,12 @@ class Settings:
         "Make it look like a frame from a Studio Ghibli film.\n\n"
         "DO NOT: replace the face, change ethnicity, lighten/darken skin, "
         "use a generic anime face, beautify, or alter facial proportions.\n\n"
-        "Result: the exact same person rendered as a Ghibli film character."
+        "Result: the exact same person rendered as a Ghibli film character.\n"
+        "Flat solid background RGB(255, 255, 255). No shadows, no gradients, no scenery."
     )
 
-    # Negative prompt for Stage 1 — passed when the model supports it.
+    # Negative prompt for Stage 1 — passed when the model supports it (qwen).
+    # flux-kontext models ignore this field entirely.
     NEGATIVE_PROMPT_PIC_TO_GHIBLI = (
         "photorealistic, photograph, realistic lighting, camera photo, "
         "generic anime face, identity drift, race change, skin tone change, beautification, "
@@ -98,6 +108,16 @@ class Settings:
         "The person is holding a colorful lock-shaped QR sign with both hands at torso level. "
         "Keep the Studio Ghibli animated illustration style throughout. Ensure the face and head "
         "remain clearly visible and unobstructed. The QR code must stay sharp, high-contrast, "
-        "square, and scannable."
-        "Use a clean solid background RGB(238, 240, 248) "
+        "square, and scannable.\n"
+        "Use a clean solid background RGB(255, 255, 255). No shadows, no gradients, no scenery."
     )
+
+
+# Warn early so misconfiguration is visible in startup logs, not at first request.
+if not Settings.DOMAIN:
+    _log.warning(
+        "DOMAIN env var is not set. CALL_BACK will be a relative URL and KIE webhooks "
+        "will never reach this server — all tasks will time out."
+    )
+if not Settings.KIE_API_KEY:
+    _log.warning("KIE_API_KEY env var is not set. All image generation requests will fail.")

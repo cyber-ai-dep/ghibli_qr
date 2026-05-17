@@ -8,20 +8,21 @@ performing a pure style transfer.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-import requests
+import httpx
 from PIL import Image
 
 from src.ghibli_portrait.services.validation_service import _detect_faces
 
 _logger = logging.getLogger("identity_check")
 
-_DOWNLOAD_HEADERS = {"User-Agent": "ghibli-qr/0.1"}
+_HTTPX_HEADERS = {"User-Agent": "ghibli-qr/0.1"}
 
 
 @dataclass
@@ -32,8 +33,9 @@ class IdentityCheckResult:
     details: dict = field(default_factory=dict)
 
 
-def _download_source(url: str, timeout: int = 15) -> Image.Image:
-    resp = requests.get(url, timeout=timeout, headers=_DOWNLOAD_HEADERS)
+async def _download_source(url: str, timeout: int = 15) -> Image.Image:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.get(url, headers=_HTTPX_HEADERS)
     resp.raise_for_status()
     return Image.open(io.BytesIO(resp.content)).convert("RGB")
 
@@ -170,19 +172,20 @@ def check_identity_drift(
     return IdentityCheckResult(ok=True, drift_detected=False)
 
 
-def check_identity_drift_from_url(
+async def check_identity_drift_from_url(
     source_url: str,
     output_img: Image.Image,
     source_timeout: int = 15,
 ) -> IdentityCheckResult:
     """
-    Download the source image and run the identity drift check.
+    Download the source image async, then run the identity drift check in a thread.
     Returns ok=True on download failure to avoid penalising network issues.
     """
     try:
-        source_img = _download_source(source_url, timeout=source_timeout)
+        source_img = await _download_source(source_url, timeout=source_timeout)
     except Exception as exc:
         _logger.warning("Could not download source for identity check (%s): %s", source_url, exc)
         return IdentityCheckResult(ok=True, reason="source_download_failed")
 
-    return check_identity_drift(source_img, output_img)
+    # check_identity_drift is CPU-bound (NumPy + MediaPipe) — run in thread
+    return await asyncio.to_thread(check_identity_drift, source_img, output_img)

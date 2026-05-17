@@ -1,3 +1,9 @@
+# NOTE: This service is intentionally synchronous.
+# It uses blocking I/O (httpx, PIL, QReader).
+# Always call validate_qr_from_image_url() via asyncio.to_thread()
+# from async contexts (e.g. FastAPI route handlers).
+# Do NOT call it directly in an async function without to_thread().
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,19 +18,12 @@ from qreader import QReader
 
 
 # ---------- CONFIG ----------
-QR_MODEL_SIZE = "s"   # small model — fast, accurate enough for QR codes
+QR_MODEL_SIZE = "l"   # large model for best accuracy
 TMP_DIR = Path("/tmp")
 
-# Module-level singleton — loaded once on first call, reused for all requests.
-# Previously re-created on every call, causing 92MB YOLO reload each time.
-_qreader: QReader | None = None
-
-
-def _get_qreader() -> QReader:
-    global _qreader
-    if _qreader is None:
-        _qreader = QReader(model_size=QR_MODEL_SIZE)
-    return _qreader
+# Module-level singleton — loading the YOLO model once per process (~1-2s) rather
+# than on every call (up to 3 retries × model load = significant overhead).
+_qreader = QReader(model_size=QR_MODEL_SIZE)
 
 
 # ---------- RESULT OBJECT ----------
@@ -95,7 +94,7 @@ def validate_qr_from_image_url(
         img_np = np.array(image)
 
         # ---------- DETECT & DECODE ----------
-        results = _get_qreader().detect_and_decode(
+        results = _qreader.detect_and_decode(
             image=img_np,
             return_detections=True,
         )

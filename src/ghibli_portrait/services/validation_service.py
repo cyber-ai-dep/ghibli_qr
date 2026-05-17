@@ -714,6 +714,55 @@ def validate_real_human_image(
     return validate_stage1_human_portrait(decode_result.image, image_url, settings=s)
 
 
+async def validate_real_human_image_async(
+    image_url: str,
+    *,
+    settings: Optional[Settings] = None,
+    mediapipe_sem=None,
+) -> ValidationResultV1:
+    """
+    Async version of validate_real_human_image.
+
+    Downloads the image with httpx (non-blocking), then runs MediaPipe
+    face detection in a thread (CPU-bound). Avoids occupying the thread
+    pool during the network download (~5-15s).
+
+    mediapipe_sem: optional asyncio.Semaphore applied only around the
+    MediaPipe thread call (~2s), not the download (~10s). This allows
+    unlimited concurrent downloads while still capping CPU usage.
+    """
+    import asyncio
+    import httpx
+
+    s = settings or Settings()
+
+    # Layer 1: Source resolution (instant, no I/O)
+    source_result = validate_source_resolution(image_url)
+    if not source_result.ok:
+        return source_result
+
+    # Layer 2: Download async — no thread, no semaphore, unlimited concurrency
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(image_url, headers={"User-Agent": "ghibli-qr/0.1"})
+            resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+    except Exception as e:
+        return ValidationResultV1(
+            ok=False,
+            code="IMAGE_DOWNLOAD_FAILED",
+            message=f"Failed to download image: {e}",
+            error_type=ErrorType.VALIDATION_ERROR,
+            stage=ErrorStage.SOURCE_RESOLUTION,
+        )
+
+    # Layer 3A: MediaPipe — CPU-bound (~2s). Semaphore applied here only.
+    if mediapipe_sem:
+        async with mediapipe_sem:
+            return await asyncio.to_thread(validate_stage1_human_portrait, img, image_url, settings=s)
+    return await asyncio.to_thread(validate_stage1_human_portrait, img, image_url, settings=s)
+
+
 def validate_human_face(url: str, *, settings: Optional[Settings] = None) -> ValidationResult:
     """
     Legacy validation function for backward compatibility.

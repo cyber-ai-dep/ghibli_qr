@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  ghibli-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    container_name: ghibli-api-v1
+    
+    ports:
+      - "8010:8010"
+    
+    # Load environment variables from .env file
+    env_file:
+      - .env
+    
+    environment:
+      PYTHONUNBUFFERED: "1"
+    
+    # Mount volumes for temporary files persistence
+    volumes:
+      - ./src/ghibli_portrait/static/tmp:/app/src/ghibli_portrait/static/tmp
+      - ./src/ghibli_portrait/static/lock.png:/app/src/ghibli_portrait/static/lock.png:ro
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8010/v1/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Auto-restart on failure
+    restart: unless-stopped
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
