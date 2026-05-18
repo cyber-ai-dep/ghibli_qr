@@ -9,20 +9,17 @@ performing a pure style transfer.
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-import httpx
+import numpy as np
 from PIL import Image
 
 from src.ghibli_portrait.services.validation_service import _detect_faces
 
 _logger = logging.getLogger("identity_check")
-
-_HTTPX_HEADERS = {"User-Agent": "ghibli-qr/0.1"}
 
 
 @dataclass
@@ -31,13 +28,6 @@ class IdentityCheckResult:
     drift_detected: bool = False
     reason: str = ""
     details: dict = field(default_factory=dict)
-
-
-async def _download_source(url: str, timeout: int = 15) -> Image.Image:
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.get(url, headers=_HTTPX_HEADERS)
-    resp.raise_for_status()
-    return Image.open(io.BytesIO(resp.content)).convert("RGB")
 
 
 def _crop_face_region(img: Image.Image, bbox: tuple, img_w: int, img_h: int) -> Image.Image:
@@ -57,8 +47,6 @@ def _mean_hue(img: Image.Image) -> float:
     Return the mean hue (0–360°) of colorful, visible pixels in the face crop.
     Returns -1 if no colorful pixels exist (greyscale / near-white face region).
     """
-    import numpy as np
-
     arr = np.array(img.resize((64, 64), Image.LANCZOS)).astype(float) / 255.0
     r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
 
@@ -66,7 +54,6 @@ def _mean_hue(img: Image.Image) -> float:
     min_c = np.minimum(np.minimum(r, g), b)
     delta = max_c - min_c
 
-    # Only colorful, visible pixels — skip greys, blacks, whites
     mask = (delta > 0.08) & (max_c > 0.10)
     if not np.any(mask):
         return -1.0
@@ -97,13 +84,8 @@ def check_identity_drift(
 
     Checks (in order of reliability):
     1. Face is present in the output.
-    2. Face area ratio hasn't changed by more than 30% (catches extreme recomposition).
-    3. Skin-tone hue in the face region hasn't shifted by more than 40° (catches
-       ethnicity / skin-tone replacement — e.g. dark brown → anime white skin).
-
-    Position/framing checks are intentionally omitted: the Qwen model outputs a
-    fixed square aspect ratio regardless of input, so face position naturally shifts
-    when the source is non-square and would produce false positives.
+    2. Face area ratio hasn't changed by more than 30%.
+    3. Skin-tone hue in the face region hasn't shifted by more than 40°.
 
     On detector failure, returns ok=True to avoid false rejection on system errors.
     """
@@ -116,7 +98,6 @@ def check_identity_drift(
     if not out_det.ok or not src_det.ok:
         return IdentityCheckResult(ok=True, reason="detector_unavailable")
 
-    # 1. Face must exist in output
     if out_det.face_count == 0:
         return IdentityCheckResult(
             ok=False,
@@ -131,7 +112,6 @@ def check_identity_drift(
     src_face = src_det.faces[0]
     out_face = out_det.faces[0]
 
-    # 2. Face area ratio — catches full-person replacement / extreme recomposition
     area_delta = abs(src_face["area_ratio"] - out_face["area_ratio"])
     if area_delta > 0.30:
         return IdentityCheckResult(
@@ -145,7 +125,6 @@ def check_identity_drift(
             },
         )
 
-    # 3. Skin-tone hue stability
     try:
         src_crop = _crop_face_region(source_img, src_face["bbox"], src_w, src_h)
         out_crop = _crop_face_region(output_img, out_face["bbox"], out_w, out_h)
@@ -172,20 +151,9 @@ def check_identity_drift(
     return IdentityCheckResult(ok=True, drift_detected=False)
 
 
-async def check_identity_drift_from_url(
-    source_url: str,
+async def check_identity_drift_async(
+    source_img: Image.Image,
     output_img: Image.Image,
-    source_timeout: int = 15,
 ) -> IdentityCheckResult:
-    """
-    Download the source image async, then run the identity drift check in a thread.
-    Returns ok=True on download failure to avoid penalising network issues.
-    """
-    try:
-        source_img = await _download_source(source_url, timeout=source_timeout)
-    except Exception as exc:
-        _logger.warning("Could not download source for identity check (%s): %s", source_url, exc)
-        return IdentityCheckResult(ok=True, reason="source_download_failed")
-
-    # check_identity_drift is CPU-bound (NumPy + MediaPipe) — run in thread
+    """Run identity drift check in a thread (CPU-bound: NumPy + MediaPipe)."""
     return await asyncio.to_thread(check_identity_drift, source_img, output_img)

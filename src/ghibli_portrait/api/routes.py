@@ -45,7 +45,7 @@ from src.ghibli_portrait.models.schemas import (
     ErrorType,
     ErrorStage,
 )
-from src.ghibli_portrait.services.identity_check import check_identity_drift_from_url
+from src.ghibli_portrait.services.identity_check import check_identity_drift_async
 from src.ghibli_portrait.services.image_service import generate_img
 from src.ghibli_portrait.services.qr_service import get_qr
 from src.ghibli_portrait.services.qr_validation import validate_qr_from_image_url, QRValidationResult
@@ -171,7 +171,7 @@ async def transform2ghibli(request: Image2GhibliRequest):
 
         # Async download + MediaPipe in thread (no event loop blocking)
         # Semaphore passed in — applied only around MediaPipe (~2s), not download (~10s)
-        validation_result = await validate_real_human_image_async(request.img_urls[0], settings=s, mediapipe_sem=_mediapipe_sem)
+        validation_result, _ = await validate_real_human_image_async(request.img_urls[0], settings=s, mediapipe_sem=_mediapipe_sem)
         if not validation_result.ok:
             return JSONResponse(
                 status_code=422,
@@ -455,8 +455,9 @@ async def automated_pipeline(request: GhibliQRRequest):
         # Layers 1,2,3A: validate (async download + MediaPipe in thread)
         # Semaphore passed in — applied only around MediaPipe (~2s), not download (~10s).
         # Downloads run concurrently with no limit (async, zero CPU).
+        # source_img is reused for identity check — avoids a second download.
         # ---------------------------------------------------------------------
-        validation_result = await validate_real_human_image_async(request.img_url, settings=s, mediapipe_sem=_mediapipe_sem)
+        validation_result, source_img = await validate_real_human_image_async(request.img_url, settings=s, mediapipe_sem=_mediapipe_sem)
         if not validation_result.ok:
             return JSONResponse(
                 status_code=422,
@@ -598,7 +599,7 @@ async def automated_pipeline(request: GhibliQRRequest):
         # IDENTITY DRIFT GUARD (controlled by ENABLE_IDENTITY_CHECK env var)
         # =====================================================================
         identity_result = (
-            await check_identity_drift_from_url(request.img_url, ghibli_img)
+            await check_identity_drift_async(source_img, ghibli_img)
             if s.ENABLE_IDENTITY_CHECK else None
         )
         if s.ENABLE_IDENTITY_CHECK and identity_result and identity_result.drift_detected:
@@ -633,7 +634,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                             return img, s.DOMAIN + "/tmp/" + filename
 
                         retry_img, retry_local_url = await asyncio.to_thread(_save_retry)
-                        retry_identity = await check_identity_drift_from_url(request.img_url, retry_img)
+                        retry_identity = await check_identity_drift_async(source_img, retry_img)
                         if not retry_identity.drift_detected:
                             ghibli_local_url = retry_local_url
                             stage1_cost += retry_webhook.data.costTime

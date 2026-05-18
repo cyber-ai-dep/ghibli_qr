@@ -3,9 +3,11 @@ from PIL import Image
 
 from src.ghibli_portrait.config import Settings
 
+_settings = Settings()
+
 
 def get_qr(url: str, version: int = None) -> Image:
-    s = Settings()
+    s = _settings
 
     lock_img = Image.open(s.LOCK_PATH).convert("RGBA")
     lock_w, lock_h = lock_img.size
