@@ -16,7 +16,7 @@ from qreader import QReader
 
 
 # ---------- CONFIG ----------
-QR_MODEL_SIZE = "s"
+QR_MODEL_SIZE = "l"
 
 # Module-level singleton — loaded once per process (~1-2s on CPU).
 _qreader = QReader(model_size=QR_MODEL_SIZE)
