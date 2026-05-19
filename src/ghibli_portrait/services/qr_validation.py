@@ -2,14 +2,12 @@
 # It uses blocking I/O (httpx, PIL, QReader).
 # Always call validate_qr_from_image_url() via asyncio.to_thread()
 # from async contexts (e.g. FastAPI route handlers).
-# Do NOT call it directly in an async function without to_thread().
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Any
-from pathlib import Path
-from uuid import uuid4
+from io import BytesIO
+from typing import Any, Optional
 
 import httpx
 import numpy as np
@@ -18,11 +16,9 @@ from qreader import QReader
 
 
 # ---------- CONFIG ----------
-QR_MODEL_SIZE = "l"   # large model for best accuracy
-TMP_DIR = Path("/tmp")
+QR_MODEL_SIZE = "s"
 
-# Module-level singleton — loading the YOLO model once per process (~1-2s) rather
-# than on every call (up to 3 retries × model load = significant overhead).
+# Module-level singleton — loaded once per process (~1-2s on CPU).
 _qreader = QReader(model_size=QR_MODEL_SIZE)
 
 
@@ -36,29 +32,36 @@ class QRValidationResult:
     reason: Optional[str] = None
 
 
-# ---------- PAYLOAD EXTRACTION (UNCHANGED LOGIC) ----------
-def extract_qr_payload(qreader_results: Any) -> Optional[str]:
-    """
-    Extracts the first valid QR payload (string) from QReader results.
-    Ignores detection-only metadata.
-    """
+# ---------- DECODE ----------
+def _extract_qr_payload(qreader_results: Any) -> Optional[str]:
     if not qreader_results:
         return None
-
     for qr in qreader_results:
         if isinstance(qr, str):
             return qr
-
         if isinstance(qr, dict):
             text = qr.get("text")
             if isinstance(text, str):
                 return text
-
         if isinstance(qr, (tuple, list)) and len(qr) > 0:
             if isinstance(qr[0], str):
                 return qr[0]
-
     return None
+
+
+def _decode_qr(img_np: np.ndarray) -> Optional[str]:
+    """Try pyzbar first (~5ms). Fall back to QReader/YOLO (~1-2s) only if it fails."""
+    try:
+        from pyzbar.pyzbar import ZBarSymbol
+        from pyzbar.pyzbar import decode as pyzbar_decode
+        results = pyzbar_decode(img_np, symbols=[ZBarSymbol.QRCODE])
+        if results:
+            return results[0].data.decode("utf-8")
+    except Exception:
+        pass
+    # YOLO fallback: handles artistic/degraded QRs that pyzbar cannot locate.
+    raw = _qreader.detect_and_decode(image=img_np, return_detections=True)
+    return _extract_qr_payload(raw)
 
 
 # ---------- CORE VALIDATION (PIL Image → result) ----------
@@ -73,20 +76,13 @@ def validate_qr_from_image(
     """
     try:
         img_np = np.array(img.convert("RGB"))
-
-        results = _qreader.detect_and_decode(
-            image=img_np,
-            return_detections=True,
-        )
-
-        detected_payload = extract_qr_payload(results)
+        detected_payload = _decode_qr(img_np)
 
         if not detected_payload:
             return QRValidationResult(
                 ok=False,
                 detected_payload=None,
                 expected_payload=expected_payload,
-                raw_results=results,
                 reason="no valid qr payload detected in merged image",
             )
 
@@ -95,7 +91,6 @@ def validate_qr_from_image(
                 ok=False,
                 detected_payload=detected_payload,
                 expected_payload=expected_payload,
-                raw_results=results,
                 reason="qr payload mismatch",
             )
 
@@ -103,7 +98,6 @@ def validate_qr_from_image(
             ok=True,
             detected_payload=detected_payload,
             expected_payload=expected_payload,
-            raw_results=results,
         )
 
     except Exception as e:
@@ -121,31 +115,17 @@ def validate_qr_from_image_url(
     expected_payload: str,
 ) -> QRValidationResult:
     """
-    Downloads merged image, detects QR payload using QReader,
+    Downloads merged image into memory, detects QR payload,
     and validates it against the expected payload.
     Delegates to validate_qr_from_image() after download.
     """
-
-    tmp_path = TMP_DIR / f"{uuid4()}.png"
-
     try:
-        # ---------- DOWNLOAD IMAGE ----------
         with httpx.stream("GET", image_url, timeout=30) as r:
             r.raise_for_status()
-            with open(tmp_path, "wb") as f:
-                for chunk in r.iter_bytes():
-                    f.write(chunk)
+            content = r.read()
 
-        if not tmp_path.exists():
-            return QRValidationResult(
-                ok=False,
-                detected_payload=None,
-                expected_payload=expected_payload,
-                reason="downloaded image not found on disk",
-            )
-
-        image = Image.open(tmp_path).convert("RGB")
-        return validate_qr_from_image(image, expected_payload)
+        img = Image.open(BytesIO(content)).convert("RGB")
+        return validate_qr_from_image(img, expected_payload)
 
     except Exception as e:
         return QRValidationResult(
@@ -154,7 +134,3 @@ def validate_qr_from_image_url(
             expected_payload=expected_payload,
             reason=f"qr validation error: {str(e)}",
         )
-
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
