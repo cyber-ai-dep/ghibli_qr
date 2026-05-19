@@ -48,7 +48,7 @@ from src.ghibli_portrait.models.schemas import (
 from src.ghibli_portrait.services.identity_check import check_identity_drift_from_url
 from src.ghibli_portrait.services.image_service import generate_img
 from src.ghibli_portrait.services.qr_service import get_qr
-from src.ghibli_portrait.services.qr_validation import validate_qr_from_image_url, QRValidationResult
+from src.ghibli_portrait.services.qr_validation import validate_qr_from_image, validate_qr_from_image_url, QRValidationResult
 from src.ghibli_portrait.services.validation_service import (
     validate_single_image_url_list,
     validate_real_human_image_async,
@@ -89,6 +89,30 @@ s = Settings()
 _mediapipe_sem = asyncio.Semaphore(int(s.MAX_MEDIAPIPE_CONCURRENCY))
 
 _DOWNLOAD_HEADERS = {"User-Agent": "ghibli-qr/0.1"}
+
+
+async def _rehost_stage2(remote_url: str):
+    """Download Stage 2 output and save locally at full resolution.
+
+    Returns (pil_image, local_url). Raises on any failure — caller must
+    catch and fall back to the original KIE URL.
+    """
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.get(remote_url, headers=_DOWNLOAD_HEADERS)
+        resp.raise_for_status()
+    content = resp.content
+
+    def _save():
+        img = _PILImage.open(_io.BytesIO(content)).convert("RGB")
+        # Full resolution — final client deliverable, no thumbnail
+        filename = f"final_{uuid4()}.jpg"
+        path = s.TMP_PATH / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        img.save(path, format="JPEG", quality=95, optimize=True)
+        return img, s.DOMAIN + "/tmp/" + filename
+
+    img, local_url = await asyncio.to_thread(_save)
+    return img, local_url
 
 
 # ============================================================================
@@ -519,7 +543,7 @@ async def automated_pipeline(request: GhibliQRRequest):
             img = get_qr(_qr_url)
             if max(img.size) > 1024:
                 img.thumbnail((1024, 1024), _PILImage.LANCZOS)
-            filename = f"{uuid4()}.jpg"
+            filename = f"qrlock_{uuid4()}.jpg"
             img.save(s.TMP_PATH / filename, format="JPEG", quality=92, optimize=True)
             return s.DOMAIN + "/tmp/" + filename
 
@@ -580,7 +604,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                 img = _PILImage.open(_io.BytesIO(_s1_content)).convert("RGB")
                 if max(img.size) > 1024:
                     img.thumbnail((1024, 1024), _PILImage.LANCZOS)
-                filename = f"{uuid4()}.jpg"
+                filename = f"stage1_{uuid4()}.jpg"
                 img.save(s.TMP_PATH / filename, format="JPEG", quality=92, optimize=True)
                 return img, s.DOMAIN + "/tmp/" + filename
 
@@ -628,7 +652,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                             img = _PILImage.open(_io.BytesIO(_retry_content)).convert("RGB")
                             if max(img.size) > 1024:
                                 img.thumbnail((1024, 1024), _PILImage.LANCZOS)
-                            filename = f"{uuid4()}.jpg"
+                            filename = f"stage1_{uuid4()}.jpg"
                             img.save(s.TMP_PATH / filename, format="JPEG", quality=92, optimize=True)
                             return img, s.DOMAIN + "/tmp/" + filename
 
@@ -724,13 +748,33 @@ async def automated_pipeline(request: GhibliQRRequest):
                 stage2_cost += webhook_result_2.data.costTime
                 continue
 
-            qr_validation = await asyncio.to_thread(
-                validate_qr_from_image_url,
-                image_url=final_image_url,
-                expected_payload=request.url,
-            )
+            # --- Attempt local re-host of final image ---
+            _rehosted_img = None
+            _rehosted_url = None
+            try:
+                _rehosted_img, _rehosted_url = await _rehost_stage2(final_image_url)
+                _log.info("Stage 2 re-hosted: %s", _rehosted_url)
+            except Exception as _rh_err:
+                _log.warning("Stage 2 re-host failed, falling back to KIE URL: %s", _rh_err)
 
-            last_result_urls = result_urls
+            if _rehosted_img is not None and _rehosted_url is not None:
+                # Validate from in-memory PIL image — no duplicate download
+                qr_validation = await asyncio.to_thread(
+                    validate_qr_from_image,
+                    img=_rehosted_img,
+                    expected_payload=request.url,
+                )
+                response_url = _rehosted_url
+            else:
+                # Fallback: validate directly from the original KIE URL
+                qr_validation = await asyncio.to_thread(
+                    validate_qr_from_image_url,
+                    image_url=final_image_url,
+                    expected_payload=request.url,
+                )
+                response_url = final_image_url
+
+            last_result_urls = [response_url]
             last_webhook_result_2 = webhook_result_2
             last_qr_validation = qr_validation
             stage2_cost += webhook_result_2.data.costTime

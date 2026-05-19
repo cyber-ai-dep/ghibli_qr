@@ -9,6 +9,27 @@ load_dotenv()
 _log = logging.getLogger(__name__)
 
 
+def _parse_ttl_hours(env_var: str, default: int) -> int:
+    """Parse a positive-integer TTL (hours) from an env var.
+
+    Returns the default and logs a warning when the value is missing,
+    non-integer, or non-positive. Using a helper keeps individual
+    Settings assignments clean and easy to extend with new prefixes later.
+    """
+    raw = os.getenv(env_var)
+    if raw is None:
+        return default
+    try:
+        val = int(raw)
+    except (ValueError, TypeError):
+        _log.warning("%s has non-integer value %r — using default %dh", env_var, raw, default)
+        return default
+    if val <= 0:
+        _log.warning("%s must be > 0, got %d — using default %dh", env_var, val, default)
+        return default
+    return val
+
+
 class Settings:
     # QR Settings
     QR_VERSION = 1 # Ranges from 1 - 40
@@ -75,6 +96,16 @@ class Settings:
     KIE_OUTPUT_FORMAT = os.getenv("KIE_OUTPUT_FORMAT", "jpeg")
     KIE_IMAGE_SIZE = os.getenv("KIE_IMAGE_SIZE", "square")
 
+    # TTL for files in static/tmp/ — differentiated by filename prefix.
+    # stage1_* and qrlock_* are intermediate assets; final_* are client deliverables.
+    # All values must be positive integers (hours). Invalid values fall back to the default.
+    STAGE1_TTL_HOURS: int = _parse_ttl_hours("STAGE1_TTL_HOURS", 2)
+    QRLOCK_TTL_HOURS: int = _parse_ttl_hours("QRLOCK_TTL_HOURS", 2)
+    FINAL_IMAGE_TTL_HOURS: int = _parse_ttl_hours("FINAL_IMAGE_TTL_HOURS", 24)
+    # When true, final_ images are never auto-deleted regardless of TTL.
+    # Use explicit boolean — never encode "never delete" as a magic TTL value.
+    PERSIST_FINAL_IMAGES: bool = os.getenv("PERSIST_FINAL_IMAGES", "false").lower() in {"1", "true", "yes"}
+
     # Prompts
     PROMPT_PIC_TO_GHIBLI = (
         "Convert this photo into a Studio Ghibli hand-painted illustration. "
@@ -121,3 +152,7 @@ if not Settings.DOMAIN:
     )
 if not Settings.KIE_API_KEY:
     _log.warning("KIE_API_KEY env var is not set. All image generation requests will fail.")
+if Settings.PERSIST_FINAL_IMAGES:
+    _log.info("PERSIST_FINAL_IMAGES=true — final_ images will never be auto-deleted.")
+else:
+    _log.info("Final image retention TTL: %dh (set PERSIST_FINAL_IMAGES=true to keep indefinitely).", Settings.FINAL_IMAGE_TTL_HOURS)

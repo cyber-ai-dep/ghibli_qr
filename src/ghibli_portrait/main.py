@@ -19,21 +19,65 @@ s = Settings()
 
 
 async def _tmp_cleanup_loop():
-    """Delete tmp files older than 2 hours, runs every 30 minutes."""
+    """Delete tmp files respecting prefix-based TTL, runs every 30 minutes.
+
+    Prefixes and their TTLs (all configurable via env vars):
+      final_   → FINAL_IMAGE_TTL_HOURS (default 24h) — skipped entirely if PERSIST_FINAL_IMAGES=true
+      stage1_  → STAGE1_TTL_HOURS  (default 2h)
+      qrlock_  → QRLOCK_TTL_HOURS  (default 2h)
+      (other)  → 2h fallback for legacy/unnamed files
+
+    Extend this function when adding new asset categories — add a new
+    startswith() branch with its own TTL setting and prefix constant.
+    """
     while True:
         await asyncio.sleep(30 * 60)
-        cutoff = time.time() - 2 * 3600
-        deleted = 0
+        now = time.time()
+        intermediate_deleted = 0
+        final_deleted = 0
+        # Logged at most once per cycle to avoid log spam when many final_ files exist.
+        _persist_skip_logged = False
+
         for ext in ("*.jpg", "*.png"):
             for f in s.TMP_PATH.glob(ext):
                 try:
-                    if f.stat().st_mtime < cutoff:
+                    name = f.name
+                    mtime = f.stat().st_mtime
+
+                    if name.startswith("final_"):
+                        if s.PERSIST_FINAL_IMAGES:
+                            if not _persist_skip_logged:
+                                _log.info(
+                                    "Skipping final image cleanup because persistence mode is enabled"
+                                )
+                                _persist_skip_logged = True
+                            continue
+                        cutoff = now - s.FINAL_IMAGE_TTL_HOURS * 3600
+                        if mtime < cutoff:
+                            f.unlink(missing_ok=True)
+                            _log.info("Deleted expired final image: %s", name)
+                            final_deleted += 1
+                        continue
+
+                    elif name.startswith("stage1_"):
+                        cutoff = now - s.STAGE1_TTL_HOURS * 3600
+                    elif name.startswith("qrlock_"):
+                        cutoff = now - s.QRLOCK_TTL_HOURS * 3600
+                    else:
+                        cutoff = now - 2 * 3600
+
+                    if mtime < cutoff:
                         f.unlink(missing_ok=True)
-                        deleted += 1
+                        _log.debug("Cleanup: deleted intermediate file %s", name)
+                        intermediate_deleted += 1
+
                 except Exception:
                     pass
-        if deleted:
-            _log.info("Cleanup: deleted %d stale tmp files", deleted)
+
+        if final_deleted:
+            _log.info("Cleanup: deleted %d expired final image(s)", final_deleted)
+        if intermediate_deleted:
+            _log.info("Cleanup: deleted %d stale intermediate file(s)", intermediate_deleted)
 
 
 @asynccontextmanager
@@ -48,6 +92,12 @@ async def lifespan(app: FastAPI):
 
     # Pre-download MediaPipe model so the first request doesn't trigger a download.
     await asyncio.to_thread(_ensure_model_downloaded)
+
+    # Log final image retention policy once at startup so operators can confirm config.
+    if s.PERSIST_FINAL_IMAGES:
+        _log.info("Final image retention: persistence mode enabled — final_ images will never be auto-deleted")
+    else:
+        _log.info("Final image TTL cleanup active: %d hours (FINAL_IMAGE_TTL_HOURS)", s.FINAL_IMAGE_TTL_HOURS)
 
     cleanup_task = asyncio.create_task(_tmp_cleanup_loop())
     try:

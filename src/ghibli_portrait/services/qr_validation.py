@@ -61,7 +61,61 @@ def extract_qr_payload(qreader_results: Any) -> Optional[str]:
     return None
 
 
-# ---------- MAIN VALIDATION FUNCTION ----------
+# ---------- CORE VALIDATION (PIL Image → result) ----------
+def validate_qr_from_image(
+    img: Image.Image,
+    expected_payload: str,
+) -> QRValidationResult:
+    """
+    Core QR validation logic. Accepts a PIL Image directly — no download.
+    Call this when the image is already in memory to avoid duplicate downloads.
+    Always call via asyncio.to_thread() from async contexts.
+    """
+    try:
+        img_np = np.array(img.convert("RGB"))
+
+        results = _qreader.detect_and_decode(
+            image=img_np,
+            return_detections=True,
+        )
+
+        detected_payload = extract_qr_payload(results)
+
+        if not detected_payload:
+            return QRValidationResult(
+                ok=False,
+                detected_payload=None,
+                expected_payload=expected_payload,
+                raw_results=results,
+                reason="no valid qr payload detected in merged image",
+            )
+
+        if detected_payload != expected_payload:
+            return QRValidationResult(
+                ok=False,
+                detected_payload=detected_payload,
+                expected_payload=expected_payload,
+                raw_results=results,
+                reason="qr payload mismatch",
+            )
+
+        return QRValidationResult(
+            ok=True,
+            detected_payload=detected_payload,
+            expected_payload=expected_payload,
+            raw_results=results,
+        )
+
+    except Exception as e:
+        return QRValidationResult(
+            ok=False,
+            detected_payload=None,
+            expected_payload=expected_payload,
+            reason=f"qr validation error: {str(e)}",
+        )
+
+
+# ---------- URL WRAPPER (download → validate_qr_from_image) ----------
 def validate_qr_from_image_url(
     image_url: str,
     expected_payload: str,
@@ -69,6 +123,7 @@ def validate_qr_from_image_url(
     """
     Downloads merged image, detects QR payload using QReader,
     and validates it against the expected payload.
+    Delegates to validate_qr_from_image() after download.
     """
 
     tmp_path = TMP_DIR / f"{uuid4()}.png"
@@ -89,43 +144,8 @@ def validate_qr_from_image_url(
                 reason="downloaded image not found on disk",
             )
 
-        # ---------- LOAD IMAGE ----------
         image = Image.open(tmp_path).convert("RGB")
-        img_np = np.array(image)
-
-        # ---------- DETECT & DECODE ----------
-        results = _qreader.detect_and_decode(
-            image=img_np,
-            return_detections=True,
-        )
-
-        detected_payload = extract_qr_payload(results)
-
-        if not detected_payload:
-            return QRValidationResult(
-                ok=False,
-                detected_payload=None,
-                expected_payload=expected_payload,
-                raw_results=results,
-                reason="no valid qr payload detected in merged image",
-            )
-
-        # ---------- VALIDATION ----------
-        if detected_payload != expected_payload:
-            return QRValidationResult(
-                ok=False,
-                detected_payload=detected_payload,
-                expected_payload=expected_payload,
-                raw_results=results,
-                reason="qr payload mismatch",
-            )
-
-        return QRValidationResult(
-            ok=True,
-            detected_payload=detected_payload,
-            expected_payload=expected_payload,
-            raw_results=results,
-        )
+        return validate_qr_from_image(image, expected_payload)
 
     except Exception as e:
         return QRValidationResult(
