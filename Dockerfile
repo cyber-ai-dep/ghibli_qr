@@ -42,12 +42,22 @@ WORKDIR /app
 # Install only runtime dependencies (no build tools)
 # - libsm6, libxext6, libxrender-dev: Required by OpenCV (cv2)
 # - libgomp1: Required by NumPy/MediaPipe for parallel processing
+# - libgl1, libglib2.0-0, libgles2, libegl1: Required by MediaPipe
+#   (GL context for face detection — missing libGLESv2.so.2 throws
+#   "cannot open shared object file" at first MediaPipe call)
+# - libzbar0: Required by pyzbar (fast-path QR decoder; without it
+#   pyzbar silently fails and every QR check falls back to YOLO ~1-2s)
 # These are stripped from build stage and added fresh for security
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     libxext6 \
     libxrender-dev \
     libgomp1 \
+    libgl1 \
+    libglib2.0-0 \
+    libgles2 \
+    libegl1 \
+    libzbar0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy pre-built virtual environment from builder stage

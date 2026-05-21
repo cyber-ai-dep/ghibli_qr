@@ -347,91 +347,92 @@ Then:
 ## Docker Deployment
 
 ### Prerequisites
-- Docker and Docker Compose installed
 
-### Quick Start
+- Docker 20.10+
+- Docker Compose v2 (`docker-compose --version`)
+- `.env` file (copy from `.env.example` and fill `DOMAIN` + `KIE_API_KEY`)
+
+### Setup
 
 ```bash
-# 1. Clone and navigate to project
 git clone https://github.com/cyber-ai-dep/ghibli_qr
 cd ghibli_qr
-
-# 2. Configure environment variables
 cp .env.example .env
-# Edit .env with your values:
-#   DOMAIN=https://your-domain.com
-#   KIE_API_KEY=your_api_key_here
-
-# 3. Build and run with Docker Compose
+# Edit DOMAIN and KIE_API_KEY in .env
 docker-compose up -d --build
-
-# 4. Check status
-docker-compose ps
-docker-compose logs -f ghibli-api
-
-# 5. Test the API
-curl http://localhost:8010/v1/health
+curl http://localhost:30820/v1/health
 ```
 
-### Manual Docker Build & Run
+First build takes ~3-5 minutes (downloads base image, installs dependencies).
+
+### Common Commands
+
+| Command | Purpose |
+|---|---|
+| `docker-compose up -d` | Start (after first build) |
+| `docker-compose up -d --build` | Rebuild after code changes |
+| `docker-compose down && docker-compose up -d` | Apply `.env` changes |
+| `docker-compose restart` | Restart process (does NOT reload `.env`) |
+| `docker-compose logs -f ghibli-api` | Live logs |
+| `docker-compose ps` | Container status |
+| `docker-compose exec ghibli-api bash` | Shell inside container |
+
+### Configurable Host Port
+
+Default published port is `30820`. Override without editing files:
 
 ```bash
-# Build image
-docker build -t ghibli-api .
-
-# Run container
-docker run -p 8010:8010 --env-file .env ghibli-api
+HOST_PORT=8090 docker-compose up -d
 ```
 
-### Useful Docker Commands
+### Persistent Volumes
 
-```bash
-# View live logs
-docker-compose logs -f ghibli-api
+Named volumes survive rebuilds and stay on disk after `docker-compose down`:
 
-# Restart service
-docker-compose restart
+| Volume | Contents |
+|---|---|
+| `ghibli_qr_ghibli_tmp` | Generated images (cleaned by TTL) |
+| `ghibli_qr_ghibli_models` | MediaPipe model (avoids re-download) |
 
-# Stop services
-docker-compose stop
+`down -v` removes them — use only for a clean reset.
 
-# Stop and remove containers
-docker-compose down
+### Native Libraries (auto-installed in the image)
 
-# Execute command in running container
-docker-compose exec ghibli-api bash
+The Dockerfile installs all system libraries needed by OpenCV, MediaPipe, and pyzbar:
+`libsm6`, `libxext6`, `libxrender-dev`, `libgomp1`, `libgl1`, `libglib2.0-0`, `libgles2`, `libegl1`, `libzbar0`.
 
-# Check container health
-docker inspect ghibli-api-v1 | grep -A 10 '"Health"'
-
-# Remove unused containers/images
-docker system prune
-```
+No host-side installation needed.
 
 ### Troubleshooting
 
-**Port 8010 already in use:**
-```yaml
-# In docker-compose.yml, change:
-ports:
-  - "8011:8010"  # Access at http://localhost:8011
-```
+| Issue | Fix |
+|---|---|
+| Port already in use | `HOST_PORT=8090 docker-compose up -d` (default is 30820) |
+| `.env` changes not applied | `docker-compose down && docker-compose up -d` (not `restart`) |
+| Container `unhealthy` | `docker-compose logs ghibli-api` |
+| Pipeline times out at Stage 1 | `DOMAIN` is not reachable by KIE — verify externally with `curl https://<DOMAIN>/v1/health` |
 
-**Health check failing:**
-```bash
-# Check logs
-docker-compose logs ghibli-api
+---
 
-# Verify .env has correct values:
-# - DOMAIN: publicly reachable URL
-# - KIE_API_KEY: valid API key
-```
+## Server Migration
 
-**Permission denied on volumes:**
-```bash
-# Fix directory permissions
-chmod -R 755 src/ghibli_portrait/static/
-```
+When deploying to a new server or changing the public URL:
+
+1. **Update `.env`** on the new server with the new `DOMAIN` (no trailing slash).
+2. **(Optional)** Set `HOST_PORT` if `30820` is taken.
+3. **Open firewall** for the chosen `HOST_PORT`.
+4. **Build and run:** `docker-compose up -d --build`
+5. **Verify externally:** `curl https://<DOMAIN>/v1/health` from a different machine.
+
+Skipping `DOMAIN` update is the most common failure — KIE webhooks hit the old host and all Stage 1 tasks time out after 10 minutes.
+
+### Migration Checklist
+
+- [ ] `.env` exists in project root with updated `DOMAIN` and `KIE_API_KEY`
+- [ ] Firewall allows inbound on `HOST_PORT` (default 30820)
+- [ ] `DOMAIN` is publicly reachable (test with external `curl`)
+- [ ] `docker-compose ps` shows `healthy`
+- [ ] End-to-end test request returns 200 within 3 minutes
 
 ---
 
