@@ -126,11 +126,19 @@ Set `KIE_GHIBLI_MODEL` in `.env`. The code handles both payload structures autom
 
 ### Prompt System (Stage 1)
 
-**Positive prompt:**
-> *"Convert this portrait to Studio Ghibli illustration style — hand-drawn, painterly, Hayao Miyazaki film aesthetic. Realistic facial proportions, natural-sized eyes, soft warm tones. Not anime. Preserve exact identity, exact person, exact face."*
+**Positive prompt** — static base with dynamic skin hex injected at runtime:
+> *"Convert this photo into a Studio Ghibli hand-painted illustration. Apply the full Ghibli visual style: soft watercolor backgrounds, warm painterly color palette, clean expressive linework, cel-shaded lighting, lush atmospheric depth, and the characteristic hand-drawn Ghibli texture throughout every surface.*
+>
+> *IDENTITY LOCK: same person, same face structure, same skin tone, same ethnicity, same race, same hairstyle, same expression, same clothing, same pose.*
+>
+> *SKIN COLOR IS ABSOLUTE: reproduce the exact skin tone from the photo. Dark skin stays dark. Light skin stays light. Zero tolerance for lightening or whitening.*
+>
+> *EXACT SKIN COLOR: `#RRGGBB`. [injected at runtime — measured from the input image via YCbCr skin detection] You MUST reproduce this exact color. Do NOT lighten, darken, whiten, or shift this color in any direction."*
+
+The exact skin hex is extracted from the input image at request time using YCbCr color space analysis (covers all skin tones from very dark to light). It is appended to the prompt for both Stage 1 (Ghibli generation) and Stage 2 (QR composition) so neither stage can drift the skin color.
 
 **Negative prompt** (applied when supported by the model):
-> *"anime style, manga style, large anime eyes, big eyes, anime proportions, generic anime face, identity drift, skin tone change, skin lightening, skin whitening, skin darkening, face replacement, different person."*
+> *"photorealistic, photograph, generic anime face, identity drift, race change, skin tone change, beautification, face replacement, facial simplification, different person, altered ethnicity, altered hairstyle, altered expression."*
 
 ### Fidelity Parameters (qwen)
 
@@ -163,6 +171,7 @@ Any image containing a detectable human face is accepted — regardless of gende
 |---|---|
 | No face detected | `NO_FACE_DETECTED` |
 | Multiple prominent faces (secondary ≥65% area AND ≥60% confidence of primary) | `MULTIPLE_FACES` |
+| Synthetic/3D render or game character (pixel uniformity + noise analysis) | `NOT_REAL_PHOTO` |
 | Detector runtime error | `FACE_DETECTOR_FAILURE` |
 
 ---
@@ -243,6 +252,7 @@ All endpoints prefixed with `/v1`.
 | `IMAGE_DOWNLOAD_FAILED` | 422 | SOURCE_RESOLUTION | Failed to download the image |
 | `NO_FACE_DETECTED` | 422 | STAGE1_GHIBLI | No human face found in the image |
 | `MULTIPLE_FACES` | 422 | STAGE1_GHIBLI | Multiple prominent human faces detected |
+| `NOT_REAL_PHOTO` | 422 | STAGE1_GHIBLI | Image is a 3D render, game character, or cartoon — not a real photo |
 | `FACE_DETECTOR_FAILURE` | 500 | STAGE1_GHIBLI | MediaPipe runtime error |
 | `STAGE1_API_ERROR` | 500 | STAGE1_GHIBLI | KIE API rejected Stage 1 submission |
 | `STAGE1_TASK_FAILED` | 500 | STAGE1_GHIBLI | Stage 1 generation task failed |
