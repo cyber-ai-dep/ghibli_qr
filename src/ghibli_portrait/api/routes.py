@@ -53,6 +53,7 @@ from src.ghibli_portrait.services.validation_service import (
     validate_single_image_url_list,
     validate_real_human_image_async,
     validate_stage2_input,
+    extract_skin_color_hex,
 )
 from src.ghibli_portrait.utils.url_utils import shorten
 
@@ -512,12 +513,28 @@ async def automated_pipeline(request: GhibliQRRequest):
                 ).model_dump(by_alias=True),
             )
 
+        # Extract exact skin color from validated input image — inject into Stage 1 prompt
+        # so the model receives the precise hex value to match, not just a generic instruction.
+        _skin_hex = None
+        if source_img is not None:
+            _skin_hex = await asyncio.to_thread(extract_skin_color_hex, source_img)
+
+        _stage1_prompt = s.PROMPT_PIC_TO_GHIBLI
+        if _skin_hex:
+            _stage1_prompt += (
+                f"\n\nEXACT SKIN COLOR: {_skin_hex}. "
+                "This is the person's real measured skin tone. "
+                "You MUST reproduce this exact color in the illustration. "
+                "Do NOT lighten, darken, whiten, or shift this color in any direction."
+            )
+            _log.info("Stage 1 skin tone injected into prompt: %s", _skin_hex)
+
         # =====================================================================
         # STAGE 1: Submit Ghibli generation (native async HTTP)
         # =====================================================================
         res = await generate_img(
             [request.img_url],
-            s.PROMPT_PIC_TO_GHIBLI,
+            _stage1_prompt,
             model=s.KIE_GHIBLI_MODEL,
             negative_prompt=s.NEGATIVE_PROMPT_PIC_TO_GHIBLI,
         )
@@ -630,7 +647,7 @@ async def automated_pipeline(request: GhibliQRRequest):
             retry_accepted = False
             retry_res = await generate_img(
                 [request.img_url],
-                s.PROMPT_PIC_TO_GHIBLI,
+                _stage1_prompt,
                 model=s.KIE_GHIBLI_MODEL,
                 negative_prompt=s.NEGATIVE_PROMPT_PIC_TO_GHIBLI,
             )
@@ -688,9 +705,16 @@ async def automated_pipeline(request: GhibliQRRequest):
         last_qr_validation = None
         stage2_cost = 0
 
+        _stage2_prompt = s.PROMPT_GHIBLI_LOCK
+        if _skin_hex:
+            _stage2_prompt += (
+                f" EXACT SKIN COLOR: {_skin_hex}. "
+                "You MUST reproduce this exact tone. Do NOT lighten, darken, or shift it."
+            )
+
         for attempt in range(1, 4):
             res2 = await generate_img(
-                [ghibli_local_url, qr_lock_url_path], s.PROMPT_GHIBLI_LOCK, model=s.KIE_COMPOSE_MODEL
+                [ghibli_local_url, qr_lock_url_path], _stage2_prompt, model=s.KIE_COMPOSE_MODEL
             )
             if res2.get("code") != 200:
                 return JSONResponse(

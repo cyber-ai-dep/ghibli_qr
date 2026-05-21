@@ -115,7 +115,9 @@ class Settings:
         "IDENTITY LOCK — never change these:\n"
         "Same person, same face structure, same skin tone, same ethnicity, same race.\n"
         "Same hairstyle, same facial hair, same expression.\n"
-        "Same clothing, same pose, same hands, same background composition.\n\n"
+        "Same clothing, same pose, same hands, same background composition.\n"
+        "SKIN COLOR IS ABSOLUTE: reproduce the exact skin tone from the photo. "
+        "Dark skin stays dark. Light skin stays light. Zero tolerance for lightening or whitening.\n\n"
         "STYLE CHANGE — only these:\n"
         "Render everything as a hand-painted Ghibli illustration.\n"
         "Apply Ghibli color grading, line art, and painterly texture.\n"
@@ -136,11 +138,13 @@ class Settings:
     )
 
     PROMPT_GHIBLI_LOCK = (
-        "The person is holding a colorful lock-shaped QR sign with both hands at torso level. "
-        "Keep the Studio Ghibli animated illustration style throughout. Ensure the face and head "
-        "remain clearly visible and unobstructed. The QR code must stay sharp, high-contrast, "
-        "square, and scannable.\n"
-        "Use a clean solid background RGB(255, 255, 255). No shadows, no gradients, no scenery."
+        "Compose the two images: the Ghibli illustrated person from the first image is holding "
+        "the colorful QR code lock from the second image with both hands at chest level. "
+        "The QR code lock must appear clearly — sharp, high-contrast, square, and fully scannable. "
+        "STRICT: preserve the person's exact skin color, face structure, and Ghibli illustration style from the first image exactly. "
+        "Do NOT lighten, darken, or alter skin tone in any way. "
+        "Face and head must remain fully visible and unobstructed. "
+        "Clean solid background RGB(255, 255, 255). No shadows, no gradients."
     )
 
 
@@ -152,6 +156,13 @@ if not Settings.DOMAIN:
     )
 if not Settings.KIE_API_KEY:
     _log.warning("KIE_API_KEY env var is not set. All image generation requests will fail.")
+if Settings.KIE_COMPOSE_MODEL and Settings.KIE_COMPOSE_MODEL.startswith("flux-kontext"):
+    _log.warning(
+        "KIE_COMPOSE_MODEL is set to '%s' (flux-kontext). "
+        "flux-kontext only accepts a single image — Stage 2 QR composition requires a multi-image model "
+        "(e.g. seedream). Set KIE_COMPOSE_MODEL to the correct model or Stage 2 will always fail.",
+        Settings.KIE_COMPOSE_MODEL,
+    )
 if Settings.PERSIST_FINAL_IMAGES:
     _log.info("PERSIST_FINAL_IMAGES=true — final_ images will never be auto-deleted.")
 else:

@@ -300,6 +300,76 @@ def _detect_faces(img: Image.Image) -> FaceDetectionResult:
         return FaceDetectionResult(ok=False, error=f"Face detection runtime error: {e}")
 
 
+def _is_synthetic_face(img: Image.Image, bbox: tuple) -> bool:
+    """
+    Returns True if the face region appears to be a synthetic render, 3D game character,
+    or cartoon — not a real human photograph (including B&W photos).
+
+    Three independent signals — any one can reject:
+
+    Rule A — pixelated / flat-color art (Minecraft pixel art, simple cartoons):
+        diversity < 0.05  AND  uniformity > 0.25
+        B&W real photos have low diversity but also low uniformity (face texture) → safe.
+
+    Rule B — clean 3D render / smooth cartoon (high-quality game characters, CGI):
+        diversity < 0.20  AND  noise_level < 2.5
+        Real photos (color OR B&W) always have sensor noise + JPEG artifacts → noise > 3.
+        3D renders are mathematically clean → noise < 2 even after JPEG compression.
+        B&W real photos: diversity is inherently capped at 256/total but noise stays high → safe.
+    """
+    try:
+        import numpy as np
+        from PIL import ImageFilter
+
+        x, y, w, h = bbox
+        margin = int(min(w, h) * 0.2)
+        img_w, img_h = img.size
+        x1 = max(0, x - margin)
+        y1 = max(0, y - margin)
+        x2 = min(img_w, x + w + margin)
+        y2 = min(img_h, y + h + margin)
+
+        region = img.crop((x1, y1, x2, y2)).convert("RGB")
+        arr = np.array(region)
+        h_px, w_px = arr.shape[:2]
+        total = h_px * w_px
+
+        if total < 400:
+            return False
+
+        # Signal 1: unique RGB triplets as fraction of total pixels
+        unique_colors = len(np.unique(arr.reshape(-1, 3), axis=0))
+        diversity = unique_colors / total
+
+        # Signal 2: fraction of adjacent pixel pairs with identical RGB
+        h_same = np.mean(np.all(arr[:, :-1] == arr[:, 1:], axis=2))
+        v_same = np.mean(np.all(arr[:-1, :] == arr[1:, :], axis=2))
+        uniformity = (h_same + v_same) / 2
+
+        # Signal 3: high-frequency noise level (mean abs diff from Gaussian-blurred version).
+        # Real photos: sensor noise + JPEG artifacts → noise_level > 3.
+        # 3D renders: mathematically clean surfaces → noise_level < 2 even after JPEG.
+        arr_f = arr.astype(np.float32)
+        smooth_arr = np.array(
+            region.filter(ImageFilter.GaussianBlur(radius=1)).convert("RGB"),
+            dtype=np.float32,
+        )
+        noise_level = float(np.mean(np.abs(arr_f - smooth_arr)))
+
+        # Rule A: pixelated / flat-color art
+        if diversity < 0.05 and uniformity > 0.25:
+            return True
+
+        # Rule B: clean 3D render or smooth cartoon
+        if diversity < 0.20 and noise_level < 2.5:
+            return True
+
+        return False
+
+    except Exception:
+        return False
+
+
 def validate_stage1_human_portrait(
     img: Image.Image,
     image_url: str,
@@ -309,7 +379,7 @@ def validate_stage1_human_portrait(
     Layer 3A: Stage 1 (Ghibli) human portrait validation.
 
     MediaPipe-only face detection with strict rules:
-    - If MediaPipe detects a face → image is treated as human (no further rejection)
+    - If MediaPipe detects a face → run synthetic-image check, then accept if real
     - Multiple faces rejected only when secondary is visually significant
     - Animal/cartoon rejection only when ZERO faces detected
     - Detector failure returns SYSTEM_ERROR, not validation error
@@ -372,6 +442,23 @@ def validate_stage1_human_portrait(
                     stage=ErrorStage.STAGE1_GHIBLI
                 )
 
+        # Reject synthetic renders (3D game characters, cartoons) that trick MediaPipe.
+        face_bbox = primary.get("bbox")
+        if face_bbox and _is_synthetic_face(img, face_bbox):
+            _validation_logger.info({
+                "url": image_url,
+                "faceCount": face_count,
+                "decision": "REJECT",
+                "reason": "SYNTHETIC_IMAGE_DETECTED"
+            })
+            return ValidationResultV1(
+                ok=False,
+                code="NOT_REAL_PHOTO",
+                message="Image appears to be a 3D render, game character, or cartoon. Please provide a real human portrait photo.",
+                error_type=ErrorType.VALIDATION_ERROR,
+                stage=ErrorStage.STAGE1_GHIBLI
+            )
+
         _validation_logger.info({"url": image_url, "faceCount": face_count, "decision": "ACCEPT"})
         return ValidationResultV1(ok=True, stage=ErrorStage.STAGE1_GHIBLI)
 
@@ -404,6 +491,53 @@ def validate_stage2_input(stage1_output_url: str) -> ValidationResultV1:
             stage=ErrorStage.STAGE2_QR
         )
     return ValidationResultV1(ok=True, stage=ErrorStage.STAGE2_QR)
+
+
+# ============================================================================
+# SKIN COLOR EXTRACTION
+# ============================================================================
+
+def extract_skin_color_hex(img: Image.Image) -> Optional[str]:
+    """
+    Extract the dominant skin color from an image using YCbCr-based skin detection.
+
+    Returns a hex string like '#8B4513' representing the median skin pixel color,
+    or None if too few skin pixels are found.
+
+    Covers the full human skin tone spectrum — from very dark to very light skin.
+    Works on both color and B&W photos (B&W returns None — no color to extract).
+    Always call via asyncio.to_thread() from async contexts.
+    """
+    try:
+        import numpy as np
+
+        # Downscale for speed — color statistics don't need full resolution.
+        thumb = img.convert("RGB")
+        if max(thumb.size) > 512:
+            thumb.thumbnail((512, 512), Image.LANCZOS)
+
+        arr = np.array(thumb)
+        ycbcr = np.array(thumb.convert("YCbCr"))
+        Y  = ycbcr[:, :, 0].astype(np.int16)
+        Cb = ycbcr[:, :, 1].astype(np.int16)
+        Cr = ycbcr[:, :, 2].astype(np.int16)
+
+        # Established YCbCr skin range — validated across dark, medium, and light tones.
+        # Y > 40 catches very dark skin (avoids clipping deep brown/black tones).
+        skin_mask = (Y > 40) & (Cb >= 77) & (Cb <= 130) & (Cr >= 130) & (Cr <= 175)
+
+        if skin_mask.sum() < 200:
+            return None
+
+        skin_pixels = arr[skin_mask]
+        r = int(np.median(skin_pixels[:, 0]))
+        g = int(np.median(skin_pixels[:, 1]))
+        b = int(np.median(skin_pixels[:, 2]))
+
+        return f"#{r:02X}{g:02X}{b:02X}"
+
+    except Exception:
+        return None
 
 
 # ============================================================================

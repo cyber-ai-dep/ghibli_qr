@@ -31,8 +31,8 @@ async def generate_img(
     is_flux_kontext = chosen_model.startswith("flux-kontext")
     is_qwen_model = chosen_model.startswith("qwen/")
 
-    if is_flux_kontext:
-        # Flux Kontext: subject-consistent style transfer, no negative_prompt support.
+    if is_flux_kontext and not (isinstance(img_urls, list) and len(img_urls) > 1):
+        # Flux Kontext: subject-consistent style transfer, single image, no negative_prompt support.
         image_url = img_urls[0] if isinstance(img_urls, list) else img_urls
         body = {
             "model": chosen_model,
@@ -43,6 +43,24 @@ async def generate_img(
                 "aspectRatio": aspect_ratio if isinstance(aspect_ratio, str) else getattr(aspect_ratio, "value", "1:1"),
                 "outputFormat": "jpeg",
                 "safetyTolerance": 2,
+            },
+        }
+    elif is_flux_kontext:
+        # flux-kontext does NOT support multi-image composition — wrong model for Stage 2.
+        # Fall through to the generic multi-image path and let KIE return a clear API error
+        # rather than silently dropping the QR lock image and producing an unreadable QR.
+        _log.error(
+            "flux-kontext model '%s' called with %d images — it only supports 1. "
+            "Set KIE_COMPOSE_MODEL to a multi-image model (e.g. seedream) for Stage 2.",
+            chosen_model,
+            len(img_urls),
+        )
+        body = {
+            "model": chosen_model,
+            "callBackUrl": s.CALL_BACK,
+            "input": {
+                "prompt": prompt,
+                "image_urls": img_urls,
             },
         }
 
