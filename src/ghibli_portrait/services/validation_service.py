@@ -305,21 +305,22 @@ def _is_synthetic_face(img: Image.Image, bbox: tuple) -> bool:
     Returns True if the face region appears to be a synthetic render, 3D game character,
     or cartoon — not a real human photograph (including B&W photos).
 
-    Three independent signals — any one can reject:
+    Two signals — any one can reject:
 
-    Rule A — pixelated / flat-color art (Minecraft pixel art, simple cartoons):
+    Rule A — coarse pixel art (Minecraft, flat cartoon):
         diversity < 0.05  AND  uniformity > 0.25
-        B&W real photos have low diversity but also low uniformity (face texture) → safe.
+        Real photos always have > 5% unique RGB triplets in any face region → safe.
 
-    Rule B — clean 3D render / smooth cartoon (high-quality game characters, CGI):
-        diversity < 0.20  AND  noise_level < 2.5
-        Real photos (color OR B&W) always have sensor noise + JPEG artifacts → noise > 3.
-        3D renders are mathematically clean → noise < 2 even after JPEG compression.
-        B&W real photos: diversity is inherently capped at 256/total but noise stays high → safe.
+    Rule B — game character / rendered face (Minecraft close-up, CGI):
+        diversity < 0.10  AND  uniformity > 0.18
+        Rendered faces have a limited color palette AND large flat-color regions (block faces,
+        smooth shader surfaces). Real photos — even children with smooth skin, hijab wearers,
+        studio portraits — have natural color gradients that keep uniformity below 0.15.
+        This does NOT use noise_level: modern phones apply noise reduction so that signal
+        causes false positives on real photos.
     """
     try:
         import numpy as np
-        from PIL import ImageFilter
 
         x, y, w, h = bbox
         margin = int(min(w, h) * 0.2)
@@ -346,22 +347,12 @@ def _is_synthetic_face(img: Image.Image, bbox: tuple) -> bool:
         v_same = np.mean(np.all(arr[:-1, :] == arr[1:, :], axis=2))
         uniformity = (h_same + v_same) / 2
 
-        # Signal 3: high-frequency noise level (mean abs diff from Gaussian-blurred version).
-        # Real photos: sensor noise + JPEG artifacts → noise_level > 3.
-        # 3D renders: mathematically clean surfaces → noise_level < 2 even after JPEG.
-        arr_f = arr.astype(np.float32)
-        smooth_arr = np.array(
-            region.filter(ImageFilter.GaussianBlur(radius=1)).convert("RGB"),
-            dtype=np.float32,
-        )
-        noise_level = float(np.mean(np.abs(arr_f - smooth_arr)))
-
-        # Rule A: pixelated / flat-color art
+        # Rule A: coarse pixel art
         if diversity < 0.05 and uniformity > 0.25:
             return True
 
-        # Rule B: clean 3D render or smooth cartoon
-        if diversity < 0.20 and noise_level < 2.5:
+        # Rule B: rendered / game character face
+        if diversity < 0.10 and uniformity > 0.18:
             return True
 
         return False
@@ -414,30 +405,28 @@ def validate_stage1_human_portrait(
         primary = faces[0]
 
         if face_count > 1:
-            secondary = faces[1]
-            primary_area = primary.get("area", 1.0)
-            secondary_area = secondary.get("area", 0.0)
-            primary_score = primary.get("score", 1.0)
-            secondary_score = secondary.get("score", 0.0)
-            secondary_area_ratio = secondary.get("area_ratio", 0.0)
-
-            area_ratio = secondary_area / primary_area if primary_area > 0 else 0.0
-            confidence_ratio = secondary_score / primary_score if primary_score > 0 else 0.0
-
-            if area_ratio >= 0.80 and confidence_ratio >= 0.70 and secondary_area_ratio >= 0.05:
+            # Reject if any secondary face covers >= 3% of the image AND has confidence >= 0.45.
+            # 3% area floor: filters background clutter and MediaPipe ghost boxes that appear
+            # on reflections, clothing patterns, or partially occluded objects in single-person
+            # portraits. A real second person in frame will always be >= 3%.
+            # 0.45 confidence floor: above the 0.35 detection minimum — low-confidence
+            # secondary detections in single-person photos are suppressed.
+            significant_secondary = [
+                f for f in faces[1:]
+                if f.get("area_ratio", 0.0) >= 0.03 and f.get("score", 0.0) >= 0.45
+            ]
+            if significant_secondary:
                 _validation_logger.info({
                     "url": image_url,
                     "faceCount": face_count,
-                    "secondaryAreaRatio": area_ratio,
-                    "secondaryConfidenceRatio": confidence_ratio,
-                    "secondaryAbsoluteAreaRatio": secondary_area_ratio,
+                    "significantSecondary": len(significant_secondary),
                     "decision": "REJECT",
-                    "reason": "MULTIPLE_PROMINENT_FACES"
+                    "reason": "MULTIPLE_FACES",
                 })
                 return ValidationResultV1(
                     ok=False,
                     code="MULTIPLE_FACES",
-                    message="Multiple prominent human faces detected. Please provide a single-person portrait.",
+                    message="Multiple human faces detected. Please provide a single-person portrait.",
                     error_type=ErrorType.VALIDATION_ERROR,
                     stage=ErrorStage.STAGE1_GHIBLI
                 )

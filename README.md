@@ -170,7 +170,7 @@ Any image containing a detectable human face is accepted — regardless of gende
 | Condition | Error Code |
 |---|---|
 | No face detected | `NO_FACE_DETECTED` |
-| Multiple prominent faces (secondary ≥65% area AND ≥60% confidence of primary) | `MULTIPLE_FACES` |
+| More than one face detected (secondary face ≥2% of image area) | `MULTIPLE_FACES` |
 | Synthetic/3D render or game character (pixel uniformity + noise analysis) | `NOT_REAL_PHOTO` |
 | Detector runtime error | `FACE_DETECTOR_FAILURE` |
 
@@ -250,6 +250,7 @@ All endpoints prefixed with `/v1`.
 | `SINGLE_IMAGE_REQUIRED` | 422 | INPUT | Request must contain exactly one image URL |
 | `INVALID_IMAGE_URL` | 422 | SOURCE_RESOLUTION | URL is not publicly accessible or malformed |
 | `IMAGE_DOWNLOAD_FAILED` | 422 | SOURCE_RESOLUTION | Failed to download the image |
+| `IMAGE_DECODE_FAILED` | 422 | SOURCE_RESOLUTION | Image bytes are corrupt, unsupported format, or invalid payload |
 | `NO_FACE_DETECTED` | 422 | STAGE1_GHIBLI | No human face found in the image |
 | `MULTIPLE_FACES` | 422 | STAGE1_GHIBLI | Multiple prominent human faces detected |
 | `NOT_REAL_PHOTO` | 422 | STAGE1_GHIBLI | Image is a 3D render, game character, or cartoon — not a real photo |

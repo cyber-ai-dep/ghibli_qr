@@ -15,6 +15,7 @@ import asyncio
 import io as _io
 import json
 import logging
+import time as _time
 from typing import Dict
 from uuid import uuid4
 
@@ -475,6 +476,9 @@ async def automated_pipeline(request: GhibliQRRequest):
     Layer 4 (Orchestration): Coordinates validation and generation stages.
     Models: KIE_GHIBLI_MODEL (stage 1), KIE_COMPOSE_MODEL (stage 2).
     """
+    _req_id = uuid4().hex[:8]
+    _t0 = _time.monotonic()
+    _log.info("[%s] Pipeline start — img=%s qr_url=%s", _req_id, request.img_url.split("/")[-1], request.url[:40])
     try:
         # ---------------------------------------------------------------------
         # Layers 1,2,3A: validate (async download + MediaPipe in thread)
@@ -482,7 +486,9 @@ async def automated_pipeline(request: GhibliQRRequest):
         # Downloads run concurrently with no limit (async, zero CPU).
         # source_img is reused for identity check — avoids a second download.
         # ---------------------------------------------------------------------
+        _t_val = _time.monotonic()
         validation_result, source_img = await validate_real_human_image_async(request.img_url, settings=s, mediapipe_sem=_mediapipe_sem)
+        _log.info("[%s] Validation done in %.1fs — ok=%s code=%s", _req_id, _time.monotonic() - _t_val, validation_result.ok, getattr(validation_result, "code", None))
         if not validation_result.ok:
             return JSONResponse(
                 status_code=422,
@@ -532,12 +538,15 @@ async def automated_pipeline(request: GhibliQRRequest):
         # =====================================================================
         # STAGE 1: Submit Ghibli generation (native async HTTP)
         # =====================================================================
+        _t_s1_submit = _time.monotonic()
+        _log.info("[%s] Stage 1 submit — model=%s", _req_id, s.KIE_GHIBLI_MODEL)
         res = await generate_img(
             [request.img_url],
             _stage1_prompt,
             model=s.KIE_GHIBLI_MODEL,
             negative_prompt=s.NEGATIVE_PROMPT_PIC_TO_GHIBLI,
         )
+        _log.info("[%s] Stage 1 submit done in %.2fs — code=%s", _req_id, _time.monotonic() - _t_s1_submit, res.get("code"))
         if res["code"] != 200:
             return JSONResponse(
                 status_code=500,
@@ -556,6 +565,7 @@ async def automated_pipeline(request: GhibliQRRequest):
         # Generate QR lock image while Stage 1 runs.
         # Pure local PIL work — thread keeps event loop free (~0.5s).
         _qr_url = request.url
+        _t_qr = _time.monotonic()
 
         def _gen_qr_lock():
             img = get_qr(_qr_url)
@@ -566,11 +576,15 @@ async def automated_pipeline(request: GhibliQRRequest):
             return s.DOMAIN + "/tmp/" + filename
 
         qr_lock_url_path = await asyncio.to_thread(_gen_qr_lock)
+        _log.info("[%s] QR lock generated in %.2fs — saved as qrlock_*.jpg size=%dpx", _req_id, _time.monotonic() - _t_qr, 645)
 
+        _t_s1_wait = _time.monotonic()
         try:
             webhook_result_1: CallbackRequest = await asyncio.wait_for(future_1, timeout=600)
+            _log.info("[%s] Stage 1 webhook received in %.1fs — taskId=%s", _req_id, _time.monotonic() - _t_s1_wait, task_id_1)
         except asyncio.TimeoutError:
             pending_tasks.pop(task_id_1, None)
+            _log.warning("[%s] Stage 1 TIMEOUT after %.0fs — taskId=%s", _req_id, _time.monotonic() - _t_s1_wait, task_id_1)
             return JSONResponse(
                 status_code=504,
                 content=external_error_response(
@@ -713,9 +727,12 @@ async def automated_pipeline(request: GhibliQRRequest):
             )
 
         for attempt in range(1, 4):
+            _t_s2_submit = _time.monotonic()
+            _log.info("[%s] Stage 2 attempt %d/3 — model=%s", _req_id, attempt, s.KIE_COMPOSE_MODEL)
             res2 = await generate_img(
                 [ghibli_local_url, qr_lock_url_path], _stage2_prompt, model=s.KIE_COMPOSE_MODEL
             )
+            _log.info("[%s] Stage 2 attempt %d submit done in %.2fs — code=%s", _req_id, attempt, _time.monotonic() - _t_s2_submit, res2.get("code"))
             if res2.get("code") != 200:
                 return JSONResponse(
                     status_code=500,
@@ -731,10 +748,13 @@ async def automated_pipeline(request: GhibliQRRequest):
             future_2 = asyncio.get_running_loop().create_future()
             pending_tasks[task_id_2] = future_2
 
+            _t_s2_wait = _time.monotonic()
             try:
                 webhook_result_2: CallbackRequest = await asyncio.wait_for(future_2, timeout=600)
+                _log.info("[%s] Stage 2 attempt %d webhook received in %.1fs — taskId=%s costTime=%s", _req_id, attempt, _time.monotonic() - _t_s2_wait, task_id_2, getattr(webhook_result_2.data, "costTime", "?"))
             except asyncio.TimeoutError:
                 pending_tasks.pop(task_id_2, None)
+                _log.warning("[%s] Stage 2 attempt %d TIMEOUT after %.0fs — taskId=%s", _req_id, attempt, _time.monotonic() - _t_s2_wait, task_id_2)
                 return JSONResponse(
                     status_code=504,
                     content=external_error_response(
@@ -804,6 +824,12 @@ async def automated_pipeline(request: GhibliQRRequest):
             last_qr_validation = qr_validation
             stage2_cost += webhook_result_2.data.costTime
 
+            _log.info(
+                "[%s] Stage 2 attempt %d QR validation — ok=%s detected=%s reason=%s",
+                _req_id, attempt, qr_validation.ok,
+                repr(qr_validation.detected_payload), qr_validation.reason,
+            )
+
             if qr_validation.ok:
                 break
 
@@ -811,11 +837,19 @@ async def automated_pipeline(request: GhibliQRRequest):
                 qr_validation.detected_payload is None
                 and qr_validation.reason == "no valid qr payload detected in merged image"
             ):
+                _log.info("[%s] QR not detected — retrying (attempt %d/3)", _req_id, attempt)
                 continue
 
             # Payload mismatch or any other reason — do not retry
+            _log.warning("[%s] QR mismatch — not retrying (attempt %d/3): %s", _req_id, attempt, qr_validation.reason)
             break
 
+        _total = _time.monotonic() - _t0
+        _qr_ok = last_qr_validation.ok if last_qr_validation else False
+        _log.info(
+            "[%s] Pipeline DONE in %.1fs — qr_ok=%s s1_cost=%ss s2_cost=%ss pending_tasks=%d",
+            _req_id, _total, _qr_ok, stage1_cost, stage2_cost, len(pending_tasks),
+        )
         return JSONResponse(
             content=success_response(
                 message=(
@@ -842,6 +876,7 @@ async def automated_pipeline(request: GhibliQRRequest):
     except asyncio.CancelledError:
         raise
     except Exception as e:
+        _log.exception("[pipeline] Unhandled exception in automated_pipeline: %s", e)
         return JSONResponse(
             status_code=500,
             content=internal_error_response(

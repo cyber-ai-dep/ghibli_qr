@@ -24,16 +24,49 @@ import httpx
 # Test images — loaded from test_links.txt (one URL per line, blank lines ignored)
 # ---------------------------------------------------------------------------
 TEST_IMAGES = [
-    "https://i.ibb.co/gL7nVMXZ/Screenshot-2025-04-24-200200.png",
-    "https://i.ibb.co/jZ1GSyB3/seorang-wanita-dengan-jilbab-di-kepalanya-berpose-untuk-foto-1015384-76939.jpg",
-    "https://i.ibb.co/LKtb0rG/mo.png",
-    "https://i.ibb.co/7JDhFXF4/IMG-20260509-WA0006.jpg",
-    "https://i.ibb.co/0yDJbSpg/Screenshot-2026-01-11-195950.png",
-    "https://i.ibb.co/kgCnQg7S/Screenshot-2025-05-14-143517.png",
-    "https://i.ibb.co/Y7HxnD2m/download.jpg",
-    "https://i.ibb.co/67skZ5V8/download.jpg",
-    "https://i.ibb.co/vx50VRrC/download.jpg",
-    "https://i.ibb.co/CKX1Tq2N/images.jpg",
+    # --- Real portraits (should PASS) ---
+    "https://i.ibb.co/4ZHjcZLp/istockphoto-944986244-612x612.jpg",  # 01
+    "https://i.ibb.co/twRyFjVx/van.jpg",                              # 02
+    "https://i.ibb.co/LhC1PGpM/istockphoto-1784543440-612x612.jpg",  # 03
+    "https://i.ibb.co/rGt7L47C/37403.jpg",                           # 04
+    "https://i.ibb.co/mCHT1Rb6/whiteman1.jpg",                       # 05
+    "https://i.ibb.co/2pmYnzb/whiteman2.jpg",                        # 06
+    "https://i.ibb.co/Xkrn6s7f/whiteman3.jpg",                       # 07
+    "https://i.ibb.co/DHZN0Q5t/whitewoman1.jpg",                     # 08
+    "https://i.ibb.co/RkDPv6jf/whitewoman2.jpg",                     # 09
+    "https://i.ibb.co/S4XcXmcn/whitewoman3.png",                     # 10
+    "https://i.ibb.co/cKM1stSZ/blackwoman1.jpg",                     # 11
+    "https://i.ibb.co/BKSG8VGc/blackwoman2.jpg",                     # 12
+    "https://i.ibb.co/LXzSHJnd/blackwoman3.jpg",                     # 13
+    "https://i.ibb.co/LXzSHJnd/blackwoman3.jpg",                     # 14 (duplicate — stress test)
+    "https://i.ibb.co/CKmf6hn7/hijabigirl3.jpg",                     # 15
+    "https://i.ibb.co/VcCbvTZb/hijabigirl4.jpg",                     # 16
+    "https://i.ibb.co/xK4MvVPd/hijabigirl5.jpg",                     # 17
+    "https://i.ibb.co/VcjRV3Rm/hijabigirl6.jpg",                     # 18
+    # --- Synthetic / should be REJECTED (NOT_REAL_PHOTO) ---
+    "https://i.ibb.co/b5nGjTHh/minecraft1.jpg",                      # 19
+    "https://i.ibb.co/zT7j7wM6/minecraft4.jpg",                      # 20
+    "https://i.ibb.co/zT7j7wM6/minecraft4.jpg",                      # 21 (duplicate — stress test)
+    # --- Single real person (should PASS) ---
+    "https://i.ibb.co/vxDLh4RS/selfiman.jpg",                        # 22
+    # --- Multiple faces — should be REJECTED (MULTIPLE_FACES) ---
+    "https://i.ibb.co/7tXRgDyH/threemens.jpg",                       # 23
+    "https://i.ibb.co/9HRCFNwq/threewoman.jpg",                      # 24
+    "https://i.ibb.co/tyDJhqH/threegirls.jpg",                       # 25
+    # --- Night / masked — outcome depends on face detection ---
+    "https://i.ibb.co/LX5J3gCy/nghtman.jpg",                         # 26
+    "https://i.ibb.co/r2F26p5C/maskman.jpg",                         # 27
+    "https://i.ibb.co/gbsLPTKG/nightman.jpg",                        # 28
+    "https://i.ibb.co/kgbXdcdQ/maskman2.jpg",                        # 29
+    "https://i.ibb.co/Fb34x2nd/nightman2.jpg",                       # 30
+    "https://i.ibb.co/ywq4wSz/nightman3.jpg",                        # 31
+    # --- Children / babies (should PASS after threshold fix) ---
+    "https://i.ibb.co/ym8RdLzS/aboy.jpg",                            # 32
+    "https://i.ibb.co/gsSL1JY/babyboy.jpg",                          # 33
+    "https://i.ibb.co/v6XFM1zN/babyboy2.jpg",                        # 34
+    "https://i.ibb.co/jP2dkmzq/babygirl.jpg",                        # 35
+    "https://i.ibb.co/VWdY2g36/babygirl2.jpg",                       # 36
+    "https://i.ibb.co/1JJ4Z8mP/babygirl3.jpg",                       # 37
 ]
 
 TEST_QR_URL = "https://example.com/profile"
