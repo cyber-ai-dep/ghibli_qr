@@ -92,6 +92,13 @@ class Settings:
     STAGE1_DENOISE = 0.30             # Low denoising preserves original structure
     STAGE1_FIDELITY = 0.95            # High fidelity to reference image
     STAGE1_REFERENCE_STRENGTH = 0.95  # Max reference/guidance strength
+
+    # Stage 2 composition identity preservation controls.
+    # Passed to the model when it supports them; silently ignored otherwise.
+    # Lower than Stage 1 — composition needs some freedom to place the QR element,
+    # but high enough to anchor the subject's identity from the first image.
+    STAGE2_FIDELITY = float(os.getenv("STAGE2_FIDELITY", "0.85"))
+    STAGE2_REFERENCE_STRENGTH = float(os.getenv("STAGE2_REFERENCE_STRENGTH", "0.85"))
     # Qwen-specific generation quality controls
     STAGE1_GUIDANCE_SCALE = float(os.getenv("STAGE1_GUIDANCE_SCALE", "4.0"))
     STAGE1_NUM_INFERENCE_STEPS = int(os.getenv("STAGE1_NUM_INFERENCE_STEPS", "28"))
@@ -143,12 +150,20 @@ class Settings:
     )
 
     PROMPT_GHIBLI_LOCK = (
-        "Compose the two images: the Ghibli illustrated person from the first image is holding "
-        "the colorful QR code lock from the second image with both hands at chest level. "
-        "The QR code lock must appear clearly — sharp, high-contrast, square, and fully scannable. "
-        "STRICT: preserve the person's exact skin color, face structure, and Ghibli illustration style from the first image exactly. "
-        "Do NOT lighten, darken, or alter skin tone in any way. "
-        "Face and head must remain fully visible and unobstructed. "
+        "Compose these two images: the Ghibli illustrated person from the first image "
+        "is holding the QR code lock from the second image with both hands in front of their body.\n\n"
+        "The QR code lock must be fully visible, centered, and not cropped — "
+        "sharp, high-contrast, square, and fully scannable.\n\n"
+        "SKIN COLOR IS ABSOLUTE — this is the most critical rule:\n"
+        "The skin tone must exactly match the person in the first image. "
+        "Dark skin stays dark. Light skin stays light. "
+        "Zero tolerance for lightening, whitening, brightening, or any skin tone shift.\n\n"
+        "IDENTITY LOCK — preserve exactly from the first image:\n"
+        "Same face, same skin tone, same ethnicity, same race.\n"
+        "Same hair, same clothing, same expression, same proportions.\n"
+        "Same Ghibli illustration style and painterly texture throughout.\n\n"
+        "DO NOT change: face, skin tone, hair, clothing, or Ghibli art style.\n"
+        "DO NOT lighten, darken, or shift any colors on the person.\n\n"
         "Clean solid background RGB(255, 255, 255). No shadows, no gradients."
     )
 
