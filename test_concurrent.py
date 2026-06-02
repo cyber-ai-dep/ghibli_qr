@@ -4,9 +4,8 @@ Concurrent load test for the Ghibli Portrait API.
 Sends multiple requests simultaneously and reports timing + results.
 
 Usage:
-    uv run python test_concurrent.py                        # default: 3 requests
-    uv run python test_concurrent.py --count 5             # 5 concurrent requests
-    uv run python test_concurrent.py --count 10 --url http://localhost:8010
+    uv run python test_concurrent.py                        # fires ALL test images at once
+    uv run python test_concurrent.py --url http://localhost:8010
     uv run python test_concurrent.py --endpoint /v1/ghibli  # Stage 1 only (faster)
 """
 
@@ -166,15 +165,17 @@ async def run_request(
 # Runner
 # ---------------------------------------------------------------------------
 
-async def run_concurrent(base_url: str, endpoint: str, count: int, timeout: int):
-    images = [TEST_IMAGES[i % len(TEST_IMAGES)] for i in range(count)]
+async def run_concurrent(base_url: str, endpoint: str, timeout: int):
+    # Fire one request per test image, all at once.
+    images = list(TEST_IMAGES)
+    count = len(images)
 
     print(f"\n{'='*60}")
     print(f"  Ghibli API — Concurrent Load Test")
     print(f"{'='*60}")
     print(f"  Server   : {base_url}")
     print(f"  Endpoint : {endpoint}")
-    print(f"  Requests : {count} concurrent")
+    print(f"  Requests : {count} concurrent (all test images)")
     print(f"  Timeout  : {timeout}s per request")
     print(f"{'='*60}\n")
 
@@ -261,14 +262,8 @@ def main():
     parser = argparse.ArgumentParser(description="Ghibli API concurrent load test")
     parser.add_argument(
         "--url",
-        default="http://localhost:8010",
-        help="Base server URL (default: http://localhost:8010)",
-    )
-    parser.add_argument(
-        "--count",
-        type=int,
-        default=3,
-        help="Number of concurrent requests to send (default: 3)",
+        default="http://localhost:30820",
+        help="Base server URL (default: http://localhost:30820)",
     )
     parser.add_argument(
         "--endpoint",
@@ -288,7 +283,6 @@ def main():
         run_concurrent(
             base_url=args.url.rstrip("/"),
             endpoint=args.endpoint,
-            count=args.count,
             timeout=args.timeout,
         )
     )

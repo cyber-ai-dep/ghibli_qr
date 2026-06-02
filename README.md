@@ -170,8 +170,8 @@ Any image containing a detectable human face is accepted — regardless of gende
 | Condition | Error Code |
 |---|---|
 | No face detected | `NO_FACE_DETECTED` |
-| More than one face detected (secondary face ≥2% of image area) | `MULTIPLE_FACES` |
-| Synthetic/3D render or game character (pixel uniformity + noise analysis) | `NOT_REAL_PHOTO` |
+| More than one face detected (secondary face ≥2% of image area, confidence ≥0.45) | `MULTIPLE_FACES` |
+| Synthetic/3D render or game character (color-diversity + pixel-uniformity analysis) | `NOT_REAL_PHOTO` |
 | Detector runtime error | `FACE_DETECTOR_FAILURE` |
 
 ---
@@ -362,6 +362,7 @@ Then:
 - Docker 20.10+
 - Docker Compose v2 (`docker-compose --version`)
 - `.env` file (copy from `.env.example` and fill `DOMAIN` + `KIE_API_KEY`)
+- `src/ghibli_portrait/static/lock.png` must exist as a **real PNG file** (the Stage 2 lock overlay). `docker-compose.yml` bind-mounts it read-only; if it is missing, Docker creates an empty directory in its place and Stage 2 fails with `IsADirectoryError`.
 
 ### Setup
 
@@ -461,6 +462,7 @@ Skipping `DOMAIN` update is the most common failure — KIE webhooks hit the old
 | `SHORT_CODE_LENGTH` | No | `8` | URL shortener code length |
 | `ENABLE_IDENTITY_CHECK` | No | `false` | Post-generation identity drift detection |
 | `MAX_MEDIAPIPE_CONCURRENCY` | No | `15` | Max simultaneous MediaPipe operations — tune to cap CPU on shared servers |
+| `KIE_CONCURRENCY_LIMIT` | No | `4` | Max concurrent KIE task submissions across all stages — guards against burst rate-limit errors |
 | `STAGE1_GUIDANCE_SCALE` | No | `4.0` | Qwen guidance scale |
 | `STAGE1_NUM_INFERENCE_STEPS` | No | `28` | Qwen inference steps |
 | `STAGE1_ACCELERATION` | No | `none` | Qwen acceleration (`none`/`regular`/`high`) |
@@ -536,6 +538,7 @@ Deploy to any platform supporting Python (Railway, Render, Fly.io, AWS, GCP, Azu
 
 ## Documentation
 
+- **Quick Setup (Docker)**: [QUICK_SETUP.md](QUICK_SETUP.md)
 - **Swagger UI**: `http://localhost:8010/docs`
 - **ReDoc**: `http://localhost:8010/redoc`
 - **Implementation Guide**: [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)

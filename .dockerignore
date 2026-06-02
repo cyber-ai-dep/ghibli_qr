@@ -1,0 +1,50 @@
+# ============================================================================
+# Docker build context exclusions
+# Without this file, `COPY . .` ships the 5.4 GB host .venv, .git history,
+# caches, and secrets into the image — bloating it and leaking .env.
+# The runtime venv is built fresh inside the image (/opt/venv), so the host
+# .venv is never used and must be excluded.
+# ============================================================================
+
+# Host virtual environment (rebuilt inside the image — never used at runtime)
+.venv/
+venv/
+
+# Version control
+.git/
+.gitignore
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+wheels/
+
+# Secrets — injected at runtime via docker-compose env_file, never baked in
+.env
+
+# Editor / tooling
+.vscode/
+.gipt/
+.python-version
+
+# Lock file (dependencies are resolved from pyproject.toml at build time)
+uv.lock
+
+# Tests, benchmarks, and generated test artifacts
+test_concurrent.py
+test_results_*.txt
+test_results_*.md
+benchmark_*.py
+audit_failures.py
+
+# Docs and large image assets not needed at runtime
+docs/
+IMPLEMENTATION_GUIDE.md
+PROJECT_STATUS.md
+
+# Runtime-generated files (recreated on startup)
+src/ghibli_portrait/static/tmp/
+*.log
