@@ -78,7 +78,7 @@ COPY . .
 # Create temporary directory for generated files (QR codes, rehosted images)
 # This directory is writable at runtime and holds transient files
 # On first startup, it will auto-create if it doesn't exist
-RUN mkdir -p src/ghibli_portrait/static/tmp
+RUN mkdir -p src/static/tmp
 
 # Expose the API port
 # Default port is 8010 (configurable via docker run -p)

@@ -362,7 +362,7 @@ Then:
 - Docker 20.10+
 - Docker Compose v2 (`docker-compose --version`)
 - `.env` file (copy from `.env.example` and fill `DOMAIN` + `KIE_API_KEY`)
-- `src/ghibli_portrait/static/lock.png` must exist as a **real PNG file** (the Stage 2 lock overlay). `docker-compose.yml` bind-mounts it read-only; if it is missing, Docker creates an empty directory in its place and Stage 2 fails with `IsADirectoryError`.
+- `src/static/lock.png` must exist as a **real PNG file** (the Stage 2 lock overlay, read via `config.LOCK_PATH`). `docker-compose.yml` bind-mounts it read-only; if it is missing, Docker creates an empty directory in its place and Stage 2 fails with `IsADirectoryError`.
 
 ### Setup
 

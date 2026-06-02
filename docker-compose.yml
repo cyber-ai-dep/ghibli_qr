@@ -25,9 +25,9 @@ services:
     # - ghibli_models: MediaPipe face-detection model (avoids re-download)
     # lock.png is bind-mounted read-only so asset updates take effect without rebuild.
     volumes:
-      - ghibli_tmp:/app/src/ghibli_portrait/static/tmp
+      - ghibli_tmp:/app/src/static/tmp
       - ghibli_models:/app/src/ghibli_portrait/models
-      - ./src/ghibli_portrait/static/lock.png:/app/src/ghibli_portrait/static/lock.png:ro
+      - ./src/static/lock.png:/app/src/static/lock.png:ro
 
     # Health check
     healthcheck:

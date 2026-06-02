@@ -115,7 +115,7 @@ uv run python test_concurrent.py --endpoint /v1/ghibli   # Stage 1 only (faster)
 | Port already in use | `HOST_PORT=8090 docker-compose up -d` |
 | Crash loop: `No route to host` to github on startup | Stale compose network — `docker-compose down && docker-compose up -d` recreates it. First boot downloads the QR-detector model and needs internet. |
 | Pipeline times out at Stage 1 | `DOMAIN` not reachable by KIE — test externally: `curl https://<DOMAIN>/v1/health` |
-| Stage 2 fails: `IsADirectoryError ... lock.png` | The lock overlay asset is missing. Ensure `src/ghibli_portrait/static/lock.png` is a **real PNG file**, not an empty directory (Docker creates an empty dir at the bind-mount source if the file is absent). |
+| Stage 2 fails: `IsADirectoryError ... lock.png` | The lock overlay asset is missing. Ensure `src/static/lock.png` is a **real PNG file**, not an empty directory (Docker creates an empty dir at the bind-mount source if the file is absent). |
 | Container `unhealthy` | `docker-compose logs ghibli-api` |
 
 ---
@@ -123,11 +123,11 @@ uv run python test_concurrent.py --endpoint /v1/ghibli   # Stage 1 only (faster)
 ## 8. Required asset: `lock.png`
 
 Stage 2 composes the QR code onto a lock-screen template at
-`src/ghibli_portrait/static/lock.png`. This **must exist as a PNG file** before
+`src/static/lock.png`. This **must exist as a PNG file** before
 the first `docker-compose up` — `docker-compose.yml` bind-mounts it read-only,
 and Docker will auto-create an empty **directory** in its place if the file is
 missing, which breaks Stage 2. Verify with:
 
 ```bash
-file src/ghibli_portrait/static/lock.png   # → PNG image data
+file src/static/lock.png   # → PNG image data
 ```

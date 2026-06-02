@@ -22,4 +22,4 @@ app.log
 # Runtime / generated files
 tmp/
 static/tmp/
-src/ghibli_portrait/static/tmp/
+src/static/tmp/
