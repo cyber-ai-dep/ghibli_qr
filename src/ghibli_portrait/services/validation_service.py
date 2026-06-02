@@ -305,19 +305,23 @@ def _is_synthetic_face(img: Image.Image, bbox: tuple) -> bool:
     Returns True if the face region appears to be a synthetic render, 3D game character,
     or cartoon — not a real human photograph (including B&W photos).
 
-    Two signals — any one can reject:
+    Four rules — any one can reject:
 
-    Rule A — coarse pixel art (Minecraft, flat cartoon):
+    Rule A — flat-color pixel art (simple cartoons, 8-bit sprites):
         diversity < 0.05  AND  uniformity > 0.25
-        Real photos always have > 5% unique RGB triplets in any face region → safe.
 
-    Rule B — game character / rendered face (Minecraft close-up, CGI):
-        diversity < 0.10  AND  uniformity > 0.18
-        Rendered faces have a limited color palette AND large flat-color regions (block faces,
-        smooth shader surfaces). Real photos — even children with smooth skin, hijab wearers,
-        studio portraits — have natural color gradients that keep uniformity below 0.15.
-        This does NOT use noise_level: modern phones apply noise reduction so that signal
-        causes false positives on real photos.
+    Rule B — extreme uniformity (Minecraft pixel art, classic sprites):
+        diversity < 0.20  AND  uniformity > 0.50
+        Real photos never reach uniformity > 0.50 regardless of beauty mode.
+
+    Rule C — high color dominance (3D rendered game faces, CGI):
+        diversity < 0.10  AND  max_color_freq > 0.08
+        Rendered faces have large flat-color blocks where one exact RGB value
+        covers >8% of pixels. Real photos — even heavily processed — have no
+        single exact color dominating more than ~5% of the face region.
+
+    Rule D — safety net for extreme renders:
+        diversity < 0.10  AND  uniformity > 0.45
     """
     try:
         import numpy as np
@@ -339,20 +343,31 @@ def _is_synthetic_face(img: Image.Image, bbox: tuple) -> bool:
             return False
 
         # Signal 1: unique RGB triplets as fraction of total pixels
-        unique_colors = len(np.unique(arr.reshape(-1, 3), axis=0))
-        diversity = unique_colors / total
+        unique_colors, counts = np.unique(arr.reshape(-1, 3), axis=0, return_counts=True)
+        diversity = len(unique_colors) / total
 
         # Signal 2: fraction of adjacent pixel pairs with identical RGB
         h_same = np.mean(np.all(arr[:, :-1] == arr[:, 1:], axis=2))
         v_same = np.mean(np.all(arr[:-1, :] == arr[1:, :], axis=2))
         uniformity = (h_same + v_same) / 2
 
-        # Rule A: coarse pixel art
+        # Signal 3: fraction of pixels occupied by the single most common color
+        max_color_freq = counts.max() / total
+
+        # Rule A: flat-color pixel art
         if diversity < 0.05 and uniformity > 0.25:
             return True
 
-        # Rule B: rendered / game character face
-        if diversity < 0.10 and uniformity > 0.18:
+        # Rule B: Minecraft pixel art / extreme uniformity
+        if diversity < 0.20 and uniformity > 0.50:
+            return True
+
+        # Rule C: 3D rendered game face / high color dominance
+        if diversity < 0.10 and max_color_freq > 0.08:
+            return True
+
+        # Rule D: safety net
+        if diversity < 0.10 and uniformity > 0.45:
             return True
 
         return False
@@ -405,15 +420,17 @@ def validate_stage1_human_portrait(
         primary = faces[0]
 
         if face_count > 1:
-            # Reject if any secondary face covers >= 3% of the image AND has confidence >= 0.45.
-            # 3% area floor: filters background clutter and MediaPipe ghost boxes that appear
+            # Reject if any secondary face covers >= 2% of the image AND has confidence >= 0.45.
+            # 2% area floor: filters background clutter and MediaPipe ghost boxes that appear
             # on reflections, clothing patterns, or partially occluded objects in single-person
-            # portraits. A real second person in frame will always be >= 3%.
+            # portraits. A real second person in frame will always be >= 2%. Audit confirmed
+            # zero new false positives vs the 37-image dataset when lowered from 3% → 2%;
+            # fixes threemens.jpg (faces at 2.35–2.75% area) that was missed at 3%.
             # 0.45 confidence floor: above the 0.35 detection minimum — low-confidence
             # secondary detections in single-person photos are suppressed.
             significant_secondary = [
                 f for f in faces[1:]
-                if f.get("area_ratio", 0.0) >= 0.03 and f.get("score", 0.0) >= 0.45
+                if f.get("area_ratio", 0.0) >= 0.02 and f.get("score", 0.0) >= 0.45
             ]
             if significant_secondary:
                 _validation_logger.info({
