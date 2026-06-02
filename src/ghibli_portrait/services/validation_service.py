@@ -311,17 +311,20 @@ def _is_synthetic_face(img: Image.Image, bbox: tuple) -> bool:
         diversity < 0.05  AND  uniformity > 0.25
 
     Rule B — extreme uniformity (Minecraft pixel art, classic sprites):
-        diversity < 0.20  AND  uniformity > 0.50
-        Real photos never reach uniformity > 0.50 regardless of beauty mode.
+        diversity < 0.20  AND  uniformity > 0.60
+        Real photos — including smooth studio shots and beauty-filtered portraits —
+        never reach uniformity > 0.60 regardless of skin tone.
 
     Rule C — high color dominance (3D rendered game faces, CGI):
-        diversity < 0.10  AND  max_color_freq > 0.08
+        diversity < 0.10  AND  max_color_freq > 0.08  AND  skin_ratio < 0.08
         Rendered faces have large flat-color blocks where one exact RGB value
-        covers >8% of pixels. Real photos — even heavily processed — have no
-        single exact color dominating more than ~5% of the face region.
+        covers >8% of pixels. The YCbCr skin-pixel guard (skin_ratio) makes
+        this rule skin-tone neutral: real dark skin and pale skin both contain
+        enough skin-range pixels to pass (skin_ratio >= 0.08). Synthetic renders
+        and cartoons with artificial palettes do not.
 
     Rule D — safety net for extreme renders:
-        diversity < 0.10  AND  uniformity > 0.45
+        diversity < 0.10  AND  uniformity > 0.55
     """
     try:
         import numpy as np
@@ -359,15 +362,27 @@ def _is_synthetic_face(img: Image.Image, bbox: tuple) -> bool:
             return True
 
         # Rule B: Minecraft pixel art / extreme uniformity
-        if diversity < 0.20 and uniformity > 0.50:
+        if diversity < 0.20 and uniformity > 0.60:
             return True
 
-        # Rule C: 3D rendered game face / high color dominance
+        # Rule C: 3D rendered game face / high color dominance.
+        # Skin-tone guard: if YCbCr skin pixels cover >= 8% of the crop the region
+        # contains real human skin and must not be flagged as synthetic. This guard
+        # is skin-tone neutral — very dark skin and very pale skin both satisfy it.
         if diversity < 0.10 and max_color_freq > 0.08:
-            return True
+            ycbcr = np.array(region.convert("YCbCr")).astype(np.int16)
+            Y_ch  = ycbcr[:, :, 0]
+            Cb_ch = ycbcr[:, :, 1]
+            Cr_ch = ycbcr[:, :, 2]
+            skin_mask = (
+                (Y_ch > 40) & (Cb_ch >= 77) & (Cb_ch <= 130) & (Cr_ch >= 130) & (Cr_ch <= 175)
+            )
+            skin_ratio = skin_mask.sum() / total
+            if skin_ratio < 0.08:
+                return True
 
-        # Rule D: safety net
-        if diversity < 0.10 and uniformity > 0.45:
+        # Rule D: safety net for extreme renders
+        if diversity < 0.10 and uniformity > 0.55:
             return True
 
         return False
@@ -417,25 +432,30 @@ def validate_stage1_human_portrait(
     face_detected = face_count > 0
 
     if face_detected:
-        primary = faces[0]
+        # Reliable detections: score >= 0.45 (above the 0.35 detection floor).
+        # Detections in the 0.35–0.44 range are marginal and commonly fire on dark
+        # skin shadows, hair mass, or reflections. Using them for policy decisions
+        # (primary selection, multi-face check) causes false MULTIPLE_FACES rejections
+        # on single-person dark-skinned portraits where a ghost box scores 0.37–0.44
+        # and the real face scores 0.90+. Reliable faces are used for all policy
+        # decisions; the raw list is only used as a fallback when no reliable face exists.
+        reliable_faces = [f for f in faces if f.get("score", 0.0) >= 0.45]
+        primary = reliable_faces[0] if reliable_faces else faces[0]
 
-        if face_count > 1:
-            # Reject if any secondary face covers >= 2% of the image AND has confidence >= 0.45.
-            # 2% area floor: filters background clutter and MediaPipe ghost boxes that appear
-            # on reflections, clothing patterns, or partially occluded objects in single-person
-            # portraits. A real second person in frame will always be >= 2%. Audit confirmed
-            # zero new false positives vs the 37-image dataset when lowered from 3% → 2%;
-            # fixes threemens.jpg (faces at 2.35–2.75% area) that was missed at 3%.
-            # 0.45 confidence floor: above the 0.35 detection minimum — low-confidence
-            # secondary detections in single-person photos are suppressed.
+        if len(reliable_faces) > 1:
+            # Reject if any reliable secondary face covers >= 2% of the image.
+            # 2% area floor: filters background clutter and MediaPipe ghost boxes.
+            # A real second person in frame will always be >= 2%.
+            # Score is already guaranteed >= 0.45 by the reliable_faces filter.
             significant_secondary = [
-                f for f in faces[1:]
-                if f.get("area_ratio", 0.0) >= 0.02 and f.get("score", 0.0) >= 0.45
+                f for f in reliable_faces[1:]
+                if f.get("area_ratio", 0.0) >= 0.02
             ]
             if significant_secondary:
                 _validation_logger.info({
                     "url": image_url,
                     "faceCount": face_count,
+                    "reliableFaceCount": len(reliable_faces),
                     "significantSecondary": len(significant_secondary),
                     "decision": "REJECT",
                     "reason": "MULTIPLE_FACES",
