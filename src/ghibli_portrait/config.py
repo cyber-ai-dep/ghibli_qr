@@ -75,6 +75,11 @@ class Settings:
     # Max concurrent MediaPipe face-detection operations.
     # Controls CPU ceiling on shared servers: lower = less CPU, more queue wait (~2.5s/slot).
     MAX_MEDIAPIPE_CONCURRENCY = int(os.getenv("MAX_MEDIAPIPE_CONCURRENCY", "15"))
+    # Max concurrent KIE API task submissions (all stages — Stage 1, Stage 2, identity retry —
+    # share one limit because they share the same API key and the same KIE rate limit).
+    # Prevents burst rate-limit failures under concurrent load. Lower = safer vs rate limit;
+    # higher = shorter queue wait. 4 is conservative — webhook waits (50–150 s) dominate wall time.
+    KIE_CONCURRENCY_LIMIT = int(os.getenv("KIE_CONCURRENCY_LIMIT", "4"))
 
     # Enable post-generation identity drift check. Disable when using a model that
     # consistently triggers false positives (e.g. qwen/image-edit with Ghibli style).

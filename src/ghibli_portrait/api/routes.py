@@ -25,6 +25,15 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 
 _log = logging.getLogger(__name__)
+# Uvicorn's dictConfig does not attach handlers to application loggers, only to
+# its own "uvicorn.*" loggers. Add a StreamHandler here so [KIE] retry events
+# are visible in the log file (stderr → redirected by the nohup launch command).
+if not _log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s — %(message)s"))
+    _log.addHandler(_h)
+    _log.setLevel(logging.INFO)
+    _log.propagate = False  # prevent double-printing if root gets a handler later
 from PIL import Image as _PILImage
 
 from src.ghibli_portrait.api.responses import (
@@ -89,6 +98,48 @@ s = Settings()
 # Requests beyond this limit queue and proceed as slots free (~2.5s per slot).
 # Tune via MAX_MEDIAPIPE_CONCURRENCY env var (default 15).
 _mediapipe_sem = asyncio.Semaphore(int(s.MAX_MEDIAPIPE_CONCURRENCY))
+
+# Limits concurrent KIE API task submissions to prevent rate-limit errors under burst load.
+# All stages (Stage 1, Stage 2, identity retry) share this one semaphore — same API key,
+# same KIE rate limit. Tune via KIE_CONCURRENCY_LIMIT env var (default 4).
+_kie_sem = asyncio.Semaphore(s.KIE_CONCURRENCY_LIMIT)
+
+# Substrings in KIE's error message that indicate a rate-limit response.
+_KIE_RATE_LIMIT_SIGNALS = frozenset({"call frequency", "too high", "rate limit", "rate_limit"})
+
+
+def _is_kie_rate_limited(result: dict) -> bool:
+    """Return True when KIE's response indicates a submission rate limit."""
+    msg = str(result.get("msg", "")).lower()
+    return result.get("code") == 429 or any(sig in msg for sig in _KIE_RATE_LIMIT_SIGNALS)
+
+
+async def _kie_submit(*args, **kwargs) -> dict:
+    """Wrap generate_img() with the KIE semaphore and rate-limit retry.
+
+    Flow per attempt (up to 3 total, 2 retries):
+      - Acquire _kie_sem  →  call generate_img()  →  release _kie_sem
+      - code 200            → return immediately (success)
+      - rate-limit response → log + sleep 5 s + retry (if attempts remain)
+      - any other non-200   → return immediately (do not retry)
+    """
+    result: dict = {}
+    for attempt in range(1, 4):
+        _log.info("[KIE] Submission attempt %d/3", attempt)
+        async with _kie_sem:
+            result = await generate_img(*args, **kwargs)
+        if result.get("code") == 200:
+            _log.info("[KIE] Submission succeeded (attempt %d/3)", attempt)
+            return result
+        if _is_kie_rate_limited(result):
+            if attempt < 3:
+                _log.warning("[KIE] Rate limit detected — retrying in 5 s (attempt %d/3)", attempt)
+                await asyncio.sleep(5)
+                continue
+            _log.error("[KIE] Retry budget exhausted after 3 attempts — rate limit persists")
+        return result  # non-rate-limit error OR exhausted retries: return as-is
+    return result
+
 
 _DOWNLOAD_HEADERS = {"User-Agent": "ghibli-qr/0.1"}
 
@@ -219,8 +270,8 @@ async def transform2ghibli(request: Image2GhibliRequest):
                 ).model_dump(by_alias=True)
             )
 
-        # Native async HTTP — no thread needed
-        res = await generate_img(**request.model_dump(), model=s.KIE_GHIBLI_MODEL)
+        # Semaphore + rate-limit retry via _kie_submit
+        res = await _kie_submit(**request.model_dump(), model=s.KIE_GHIBLI_MODEL)
 
         if res["code"] != 200:
             return JSONResponse(
@@ -540,7 +591,7 @@ async def automated_pipeline(request: GhibliQRRequest):
         # =====================================================================
         _t_s1_submit = _time.monotonic()
         _log.info("[%s] Stage 1 submit — model=%s", _req_id, s.KIE_GHIBLI_MODEL)
-        res = await generate_img(
+        res = await _kie_submit(
             [request.img_url],
             _stage1_prompt,
             model=s.KIE_GHIBLI_MODEL,
@@ -659,7 +710,7 @@ async def automated_pipeline(request: GhibliQRRequest):
         )
         if s.ENABLE_IDENTITY_CHECK and identity_result and identity_result.drift_detected:
             retry_accepted = False
-            retry_res = await generate_img(
+            retry_res = await _kie_submit(
                 [request.img_url],
                 _stage1_prompt,
                 model=s.KIE_GHIBLI_MODEL,
@@ -729,7 +780,7 @@ async def automated_pipeline(request: GhibliQRRequest):
         for attempt in range(1, 4):
             _t_s2_submit = _time.monotonic()
             _log.info("[%s] Stage 2 attempt %d/3 — model=%s", _req_id, attempt, s.KIE_COMPOSE_MODEL)
-            res2 = await generate_img(
+            res2 = await _kie_submit(
                 [ghibli_local_url, qr_lock_url_path], _stage2_prompt, model=s.KIE_COMPOSE_MODEL
             )
             _log.info("[%s] Stage 2 attempt %d submit done in %.2fs — code=%s", _req_id, attempt, _time.monotonic() - _t_s2_submit, res2.get("code"))
@@ -754,14 +805,24 @@ async def automated_pipeline(request: GhibliQRRequest):
                 _log.info("[%s] Stage 2 attempt %d webhook received in %.1fs — taskId=%s costTime=%s", _req_id, attempt, _time.monotonic() - _t_s2_wait, task_id_2, getattr(webhook_result_2.data, "costTime", "?"))
             except asyncio.TimeoutError:
                 pending_tasks.pop(task_id_2, None)
-                _log.warning("[%s] Stage 2 attempt %d TIMEOUT after %.0fs — taskId=%s", _req_id, attempt, _time.monotonic() - _t_s2_wait, task_id_2)
+                _log.warning(
+                    "[%s] Stage 2 attempt %d/3 timed out after %.0fs — taskId=%s",
+                    _req_id, attempt, _time.monotonic() - _t_s2_wait, task_id_2,
+                )
+                if attempt < 3:
+                    _log.warning(
+                        "[%s] Stage 2 retrying with fresh task (attempt %d/3 exhausted)",
+                        _req_id, attempt,
+                    )
+                    continue
+                _log.error("[%s] Stage 2 retry budget exhausted — all 3 attempts timed out", _req_id)
                 return JSONResponse(
                     status_code=504,
                     content=external_error_response(
                         message="Stage 2 timeout",
                         code="STAGE2_TIMEOUT",
                         stage=ErrorStage.STAGE2_QR,
-                        detail=f"Stage 2 timed out after 10 minutes (taskId: {task_id_2})",
+                        detail=f"Stage 2 timed out on all 3 attempts (last taskId: {task_id_2})",
                     ).model_dump(by_alias=True),
                 )
             finally:
