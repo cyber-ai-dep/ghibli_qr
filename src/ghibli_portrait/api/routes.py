@@ -773,8 +773,10 @@ async def automated_pipeline(request: GhibliQRRequest):
         _stage2_prompt = s.PROMPT_GHIBLI_LOCK
         if _skin_hex:
             _stage2_prompt += (
-                f" EXACT SKIN COLOR: {_skin_hex}. "
-                "You MUST reproduce this exact tone. Do NOT lighten, darken, or shift it."
+                f"\n\nEXACT SKIN COLOR: {_skin_hex}. "
+                "This is the person's real measured skin tone from the first image. "
+                "You MUST reproduce this exact color on all skin in the composed image. "
+                "Do NOT lighten, darken, whiten, or shift this color in any direction."
             )
 
         for attempt in range(1, 4):

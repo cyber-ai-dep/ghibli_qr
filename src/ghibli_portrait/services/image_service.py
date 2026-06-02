@@ -95,15 +95,24 @@ async def generate_img(
         }
 
     else:
+        input_body: dict = {
+            "prompt": prompt,
+            "image_urls": img_urls,
+            "aspect_ratio": aspect_ratio,
+            "quality": quality,
+        }
+        # Multi-image composition (Stage 2): pass identity preservation hints so the model
+        # anchors on the first image (Stage 1 Ghibli output) rather than regenerating freely.
+        # Silently ignored by models that do not support these fields.
+        if isinstance(img_urls, list) and len(img_urls) > 1:
+            input_body["fidelity"] = s.STAGE2_FIDELITY
+            input_body["reference_strength"] = s.STAGE2_REFERENCE_STRENGTH
+            input_body["preserve_identity"] = True
+            input_body["preserve_face"] = True
         body = {
             "model": chosen_model,
             "callBackUrl": s.CALL_BACK,
-            "input": {
-                "prompt": prompt,
-                "image_urls": img_urls,
-                "aspect_ratio": aspect_ratio,
-                "quality": quality,
-            },
+            "input": input_body,
         }
 
     _log.debug("KIE REQUEST >>> %s", json.dumps(body, default=str))
