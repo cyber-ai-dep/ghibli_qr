@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 from PIL import Image

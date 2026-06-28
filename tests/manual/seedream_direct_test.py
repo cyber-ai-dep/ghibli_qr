@@ -3,8 +3,10 @@ Quick test harness for the DIRECT BytePlus ARK Seedream pipeline.
 
 Two ways to use it:
 
-1) As a standalone script (adjustable image path at the top):
-       uv run python seedream_direct_test.py
+1) As a standalone script. Pass the image (URL or local path) and optional QR url
+   on the command line — falls back to IMAGE_PATH/QR_URL below if omitted:
+       uv run python seedream_direct_test.py <imageUrlOrPath> [qrUrl]
+       uv run python seedream_direct_test.py            # uses the defaults below
    It runs Stage 1 (Ghibli) + Stage 2 (QR merge) and saves the outputs to ./output/.
 
 2) As a tiny FastAPI test server (same response theme as the main app):
@@ -16,18 +18,22 @@ Two ways to use it:
 
 import asyncio
 
+# Make the project root importable when run as a standalone script from tests/manual/.
+import sys as _sys, pathlib as _pathlib
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[2]))
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.ghibli_portrait.api.responses import success_response, internal_error_response
 from src.ghibli_portrait.models.schemas import ErrorStage, GhibliQRRequest
-from src.ghibli_portrait.services.seedream_service import (
+# Test-only pipeline helpers now live alongside this script (tests/manual/).
+from seedream_pipeline import (
     download_to,
     run_pipeline,
     single_shot_ghibli_qr,
     stage1_to_ghibli,
-    stage2_merge_qr,
 )
 
 # ============================================================================
@@ -147,4 +153,16 @@ async def ghibli_qr_single(req: GhibliQRRequest):
 
 
 if __name__ == "__main__":
+    import sys
+
+    # Allow passing the image and QR URL on the command line so the run uses the
+    # link you provide instead of the hard-coded IMAGE_PATH:
+    #   uv run python seedream_direct_test.py <imageUrlOrPath> [qrUrl]
+    if len(sys.argv) > 1 and sys.argv[1].strip():
+        IMAGE_PATH = sys.argv[1].strip()
+    if len(sys.argv) > 2 and sys.argv[2].strip():
+        QR_URL = sys.argv[2].strip()
+
+    print(f"[input] image = {IMAGE_PATH}")
+    print(f"[input] qr    = {QR_URL}")
     asyncio.run(_main())

@@ -24,3 +24,16 @@ black = [
     "gipt>=0.1.2",
     "isort>=7.0.0",
 ]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+# tests/manual/ holds standalone manual scripts (load test, ARK direct test, audit)
+# that hit live/paid APIs — never collect them in the automated unit-test run.
+addopts = "--ignore=tests/manual"
+filterwarnings = ["ignore::UserWarning"]

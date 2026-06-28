@@ -23,3 +23,6 @@ app.log
 tmp/
 static/tmp/
 src/static/tmp/
+
+# Local saved final images (SAVE_OUTPUT_LOCAL)
+output/

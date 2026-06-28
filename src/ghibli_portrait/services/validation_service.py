@@ -66,7 +66,6 @@ from src.ghibli_portrait.models.schemas import ErrorType, ErrorStage
 
 # MediaPipe Tasks API imports
 try:
-    from mediapipe.tasks.python import vision
     from mediapipe.tasks.python.vision import FaceDetector, FaceDetectorOptions
     from mediapipe.tasks.python.core.base_options import BaseOptions
     import mediapipe as mp

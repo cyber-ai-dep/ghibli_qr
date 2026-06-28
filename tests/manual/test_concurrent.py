@@ -5,8 +5,9 @@ Sends multiple requests simultaneously and reports timing + results.
 
 Usage:
     uv run python test_concurrent.py                        # fires ALL test images at once
-    uv run python test_concurrent.py --url http://localhost:8010
+    uv run python test_concurrent.py --count 3              # only the first 3 images
     uv run python test_concurrent.py --endpoint /v1/ghibli  # Stage 1 only (faster)
+Results stream live as each request finishes.
 """
 
 import argparse
@@ -165,17 +166,19 @@ async def run_request(
 # Runner
 # ---------------------------------------------------------------------------
 
-async def run_concurrent(base_url: str, endpoint: str, timeout: int):
-    # Fire one request per test image, all at once.
+async def run_concurrent(base_url: str, endpoint: str, timeout: int, count: int = None):
+    # Fire one request per test image, all at once. `count` limits to the first N.
     images = list(TEST_IMAGES)
-    count = len(images)
+    if count is not None:
+        images = images[:count]
+    n = len(images)
 
     print(f"\n{'='*60}")
     print(f"  Ghibli API — Concurrent Load Test")
     print(f"{'='*60}")
     print(f"  Server   : {base_url}")
     print(f"  Endpoint : {endpoint}")
-    print(f"  Requests : {count} concurrent (all test images)")
+    print(f"  Requests : {n} concurrent")
     print(f"  Timeout  : {timeout}s per request")
     print(f"{'='*60}\n")
 
@@ -191,50 +194,45 @@ async def run_concurrent(base_url: str, endpoint: str, timeout: int):
         sys.exit(1)
 
     wall_start = time.monotonic()
-    print(f"  Firing {count} requests simultaneously...\n")
+    print(f"  Firing {n} requests simultaneously (results stream as they finish)...\n")
 
+    results: list[RequestResult] = []
     async with httpx.AsyncClient(timeout=timeout) as client:
         tasks = [
-            run_request(client, i, images[i], base_url, endpoint)
-            for i in range(count)
+            asyncio.ensure_future(run_request(client, i, images[i], base_url, endpoint))
+            for i in range(n)
         ]
-        results: list[RequestResult] = await asyncio.gather(*tasks)
+        # Print each result the moment it completes — live feedback, no silent wait.
+        for fut in asyncio.as_completed(tasks):
+            r = await fut
+            results.append(r)
+            done = len(results)
+            status = "✓" if r.success else "✗"
+            img_short = r.img_url.split("/")[-1][:30]
+            if r.success:
+                print(
+                    f"  {status} ({done:02d}/{n}) [{r.index+1:02d}] {img_short:<32} "
+                    f"{r.duration_s:6.1f}s  ARK:{r.cost_time}s  "
+                    f"→ {r.result_urls[0][:55] if r.result_urls else 'no URL'}"
+                )
+            else:
+                print(
+                    f"  {status} ({done:02d}/{n}) [{r.index+1:02d}] {img_short:<32} "
+                    f"{r.duration_s:6.1f}s  [{r.error_code}] {r.error_msg[:55]}"
+                )
 
     wall_time = time.monotonic() - wall_start
-
-    # ---------------------------------------------------------------------------
-    # Print results
-    # ---------------------------------------------------------------------------
-    print(f"\n{'='*60}")
-    print("  Results")
-    print(f"{'='*60}")
 
     passed = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
 
-    for r in sorted(results, key=lambda x: x.index):
-        status = "✓" if r.success else "✗"
-        img_short = r.img_url.split("/")[-1][:30]
-        if r.success:
-            print(
-                f"  {status} [{r.index+1:02d}] {img_short:<32} "
-                f"{r.duration_s:6.1f}s  KIE:{r.cost_time}s  "
-                f"→ {r.result_urls[0][:60] if r.result_urls else 'no URL'}..."
-            )
-        else:
-            print(
-                f"  {status} [{r.index+1:02d}] {img_short:<32} "
-                f"{r.duration_s:6.1f}s  "
-                f"[{r.error_code}] {r.error_msg[:60]}"
-            )
-
     print(f"\n{'='*60}")
     print("  Summary")
     print(f"{'='*60}")
-    print(f"  Total requests : {count}")
+    print(f"  Total requests : {n}")
     print(f"  Passed         : {len(passed)}")
     print(f"  Failed         : {len(failed)}")
-    print(f"  Wall time      : {wall_time:.1f}s  (all {count} ran in parallel)")
+    print(f"  Wall time      : {wall_time:.1f}s  (all {n} ran in parallel)")
 
     if passed:
         avg = sum(r.duration_s for r in passed) / len(passed)
@@ -277,6 +275,12 @@ def main():
         default=700,
         help="Per-request timeout in seconds (default: 700)",
     )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=None,
+        help="Limit to the first N test images (default: all)",
+    )
     args = parser.parse_args()
 
     failures = asyncio.run(
@@ -284,6 +288,7 @@ def main():
             base_url=args.url.rstrip("/"),
             endpoint=args.endpoint,
             timeout=args.timeout,
+            count=args.count,
         )
     )
     sys.exit(failures)

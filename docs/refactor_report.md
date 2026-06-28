@@ -1,5 +1,12 @@
 # Refactor Engineering Report — QR + Image Validation System
 
+> ⚠️ **HISTORICAL (superseded).** This report documents a 2026-05 refactor made while
+> the system still used the KIE.ai async/webhook backend. The generation backend has
+> since been replaced by **BytePlus ARK (Seedream)** — synchronous, no webhook, no
+> ngrok. Mentions of "KIE API → webhook callback" describe the old flow. For the
+> current architecture see [../IMPLEMENTATION_GUIDE.md](../IMPLEMENTATION_GUIDE.md).
+> The QR/validation findings below remain accurate (that code is unchanged).
+
 **Date:** 2026-05-18  
 **Scope:** `qr_validation.py`, `validation_service.py`, `identity_check.py`, `qr_service.py`, `routes.py`
 

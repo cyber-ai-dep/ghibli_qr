@@ -20,13 +20,12 @@ from typing import Dict
 from uuid import uuid4
 
 import httpx
-from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 
 _log = logging.getLogger(__name__)
 # Uvicorn's dictConfig does not attach handlers to application loggers, only to
-# its own "uvicorn.*" loggers. Add a StreamHandler here so [KIE] retry events
+# its own "uvicorn.*" loggers. Add a StreamHandler here so [GEN] retry events
 # are visible in the log file (stderr → redirected by the nohup launch command).
 if not _log.handlers:
     _h = logging.StreamHandler()
@@ -99,44 +98,44 @@ s = Settings()
 # Tune via MAX_MEDIAPIPE_CONCURRENCY env var (default 15).
 _mediapipe_sem = asyncio.Semaphore(int(s.MAX_MEDIAPIPE_CONCURRENCY))
 
-# Limits concurrent KIE API task submissions to prevent rate-limit errors under burst load.
-# All stages (Stage 1, Stage 2, identity retry) share this one semaphore — same API key,
-# same KIE rate limit. Tune via KIE_CONCURRENCY_LIMIT env var (default 4).
-_kie_sem = asyncio.Semaphore(s.KIE_CONCURRENCY_LIMIT)
+# Limits concurrent image-generation submissions to the provider (BytePlus ARK) to
+# prevent rate-limit errors under burst load. All stages (Stage 1, Stage 2, identity
+# retry) share this one semaphore. Tune via GENERATION_CONCURRENCY_LIMIT env var (default 8).
+_gen_sem = asyncio.Semaphore(s.GENERATION_CONCURRENCY_LIMIT)
 
-# Substrings in KIE's error message that indicate a rate-limit response.
-_KIE_RATE_LIMIT_SIGNALS = frozenset({"call frequency", "too high", "rate limit", "rate_limit"})
+# Substrings in the provider's error message that indicate a rate-limit response.
+_RATE_LIMIT_SIGNALS = frozenset({"call frequency", "too high", "rate limit", "rate_limit"})
 
 
-def _is_kie_rate_limited(result: dict) -> bool:
-    """Return True when KIE's response indicates a submission rate limit."""
+def _is_rate_limited(result: dict) -> bool:
+    """Return True when the provider's response indicates a submission rate limit."""
     msg = str(result.get("msg", "")).lower()
-    return result.get("code") == 429 or any(sig in msg for sig in _KIE_RATE_LIMIT_SIGNALS)
+    return result.get("code") == 429 or any(sig in msg for sig in _RATE_LIMIT_SIGNALS)
 
 
-async def _kie_submit(*args, **kwargs) -> dict:
-    """Wrap generate_img() with the KIE semaphore and rate-limit retry.
+async def _submit_generation(*args, **kwargs) -> dict:
+    """Wrap generate_img() with the concurrency semaphore and rate-limit retry.
 
     Flow per attempt (up to 3 total, 2 retries):
-      - Acquire _kie_sem  →  call generate_img()  →  release _kie_sem
+      - Acquire _gen_sem  →  call generate_img()  →  release _gen_sem
       - code 200            → return immediately (success)
       - rate-limit response → log + sleep 5 s + retry (if attempts remain)
       - any other non-200   → return immediately (do not retry)
     """
     result: dict = {}
     for attempt in range(1, 4):
-        _log.info("[KIE] Submission attempt %d/3", attempt)
-        async with _kie_sem:
+        _log.info("[GEN] Submission attempt %d/3", attempt)
+        async with _gen_sem:
             result = await generate_img(*args, **kwargs)
         if result.get("code") == 200:
-            _log.info("[KIE] Submission succeeded (attempt %d/3)", attempt)
+            _log.info("[GEN] Submission succeeded (attempt %d/3)", attempt)
             return result
-        if _is_kie_rate_limited(result):
+        if _is_rate_limited(result):
             if attempt < 3:
-                _log.warning("[KIE] Rate limit detected — retrying in 5 s (attempt %d/3)", attempt)
+                _log.warning("[GEN] Rate limit detected — retrying in 5 s (attempt %d/3)", attempt)
                 await asyncio.sleep(5)
                 continue
-            _log.error("[KIE] Retry budget exhausted after 3 attempts — rate limit persists")
+            _log.error("[GEN] Retry budget exhausted after 3 attempts — rate limit persists")
         return result  # non-rate-limit error OR exhausted retries: return as-is
     return result
 
@@ -148,7 +147,11 @@ async def _rehost_stage2(remote_url: str):
     """Download Stage 2 output and save locally at full resolution.
 
     Returns (pil_image, local_url). Raises on any failure — caller must
-    catch and fall back to the original KIE URL.
+    catch and fall back to the original provider URL.
+
+    When SAVE_OUTPUT_LOCAL is enabled, the same final image is ALSO written to
+    OUTPUT_DIR on this machine (in addition to the served /tmp copy). The served
+    URL returned in the API response is unchanged.
     """
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.get(remote_url, headers=_DOWNLOAD_HEADERS)
@@ -162,6 +165,14 @@ async def _rehost_stage2(remote_url: str):
         path = s.TMP_PATH / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         img.save(path, format="JPEG", quality=95, optimize=True)
+
+        # Optional: keep a local copy on this machine (path from OUTPUT_DIR config).
+        if s.SAVE_OUTPUT_LOCAL:
+            out_dir = s.OUTPUT_DIR
+            out_dir.mkdir(parents=True, exist_ok=True)
+            img.save(out_dir / filename, format="JPEG", quality=95, optimize=True)
+            _log.info("Saved local copy of final image: %s", out_dir / filename)
+
         return img, s.DOMAIN + "/tmp/" + filename
 
     img, local_url = await asyncio.to_thread(_save)
@@ -221,7 +232,7 @@ async def get_short_url(url: str):
     summary="Transform portrait to Ghibli style",
     description=(
         "Transform a single portrait image to Ghibli-style art. "
-        f"Powered by {s.KIE_GHIBLI_MODEL}. "
+        f"Powered by {s.GHIBLI_MODEL}. "
         "Validation: public URL, single image, face detection, human verification."
     ),
     response_model=ApiSuccessResponse,
@@ -261,17 +272,17 @@ async def transform2ghibli(request: Image2GhibliRequest):
                 ).model_dump(by_alias=True)
             )
 
-        if not s.KIE_GHIBLI_MODEL:
+        if not s.GHIBLI_MODEL:
             return JSONResponse(
                 status_code=500,
                 content=internal_error_response(
-                    message="KIE_GHIBLI_MODEL not configured",
+                    message="GHIBLI_MODEL not configured",
                     stage=ErrorStage.ORCHESTRATION,
                 ).model_dump(by_alias=True)
             )
 
-        # Semaphore + rate-limit retry via _kie_submit
-        res = await _kie_submit(**request.model_dump(), model=s.KIE_GHIBLI_MODEL)
+        # Semaphore + rate-limit retry via _submit_generation
+        res = await _submit_generation(**request.model_dump(), model=s.GHIBLI_MODEL)
 
         if res["code"] != 200:
             return JSONResponse(
@@ -415,54 +426,6 @@ async def get_qr_lock(req: QRLockRequest):
 # INTERNAL / SYSTEM
 # ============================================================================
 
-@router.post(
-    "/ghibli/callback",
-    tags=["Internal / System"],
-    summary="Webhook callback (internal use only)",
-    description=(
-        "Receives automatic notifications from KIE API when tasks complete. "
-        "**For KIE API use only - do not call directly.**"
-    ),
-    include_in_schema=True,
-    response_model=ApiSuccessResponse,
-    responses={
-        500: {"model": ApiErrorResponse, "description": "Task execution failure reported by KIE API"},
-    },
-)
-async def webhook(raw_request: Request):
-    """Internal webhook endpoint for KIE API callbacks."""
-    # Parse body manually so we always control the response.
-    # Pydantic validation before the handler would return 422 to KIE on any
-    # missing field, leaving the pending Future unresolved → 600s timeout.
-    try:
-        body = await raw_request.json()
-    except Exception:
-        _log.warning("Webhook: unparseable request body")
-        return JSONResponse(content={"code": 200, "msg": "ok"})
-
-    try:
-        req = CallbackRequest.model_validate(body)
-        task_id = req.data.taskId
-        if task_id in pending_tasks:
-            future = pending_tasks.pop(task_id, None)
-            if future and not future.done():
-                future.set_result(req)
-    except Exception as exc:
-        _log.error("Webhook processing error: %s", exc)
-        # Schema validation failed — try to unblock the waiting Future anyway
-        try:
-            task_id = body.get("data", {}).get("taskId")
-            if task_id and task_id in pending_tasks:
-                future = pending_tasks.pop(task_id, None)
-                if future and not future.done():
-                    future.set_exception(ValueError(f"Webhook parse error: {exc}"))
-        except Exception:
-            pass
-
-    # Always return HTTP 200 to KIE — non-200 may stop KIE from retrying.
-    return JSONResponse(content={"code": 200, "msg": "ok"})
-
-
 @router.delete(
     "/qr-lock/{img_id}",
     tags=["Internal / System"],
@@ -510,7 +473,7 @@ async def delete_qr_lock(img_id: str):
         "**Primary production endpoint.** "
         "Two-stage pipeline: (1) Transform portrait to Ghibli style, "
         "(2) Compose with QR code lock screen. "
-        f"Stage 1: {s.KIE_GHIBLI_MODEL}, Stage 2: {s.KIE_COMPOSE_MODEL}. "
+        f"Stage 1: {s.GHIBLI_MODEL}, Stage 2: {s.COMPOSE_MODEL}. "
         "Input image must be a real human portrait photo."
     ),
     response_model=ApiSuccessResponse,
@@ -525,7 +488,7 @@ async def automated_pipeline(request: GhibliQRRequest):
     Automated two-stage pipeline for Ghibli + QR composition.
 
     Layer 4 (Orchestration): Coordinates validation and generation stages.
-    Models: KIE_GHIBLI_MODEL (stage 1), KIE_COMPOSE_MODEL (stage 2).
+    Models: GHIBLI_MODEL (stage 1), COMPOSE_MODEL (stage 2).
     """
     _req_id = uuid4().hex[:8]
     _t0 = _time.monotonic()
@@ -552,20 +515,20 @@ async def automated_pipeline(request: GhibliQRRequest):
                 ).model_dump(by_alias=True),
             )
 
-        if not s.KIE_GHIBLI_MODEL:
+        if not s.GHIBLI_MODEL:
             return JSONResponse(
                 status_code=500,
                 content=internal_error_response(
-                    message="KIE_GHIBLI_MODEL not configured",
+                    message="GHIBLI_MODEL not configured",
                     stage=ErrorStage.ORCHESTRATION,
                 ).model_dump(by_alias=True),
             )
 
-        if not s.KIE_COMPOSE_MODEL:
+        if not s.COMPOSE_MODEL:
             return JSONResponse(
                 status_code=500,
                 content=internal_error_response(
-                    message="KIE_COMPOSE_MODEL not configured",
+                    message="COMPOSE_MODEL not configured",
                     stage=ErrorStage.ORCHESTRATION,
                 ).model_dump(by_alias=True),
             )
@@ -590,11 +553,11 @@ async def automated_pipeline(request: GhibliQRRequest):
         # STAGE 1: Submit Ghibli generation (native async HTTP)
         # =====================================================================
         _t_s1_submit = _time.monotonic()
-        _log.info("[%s] Stage 1 submit — model=%s", _req_id, s.KIE_GHIBLI_MODEL)
-        res = await _kie_submit(
+        _log.info("[%s] Stage 1 submit — model=%s", _req_id, s.GHIBLI_MODEL)
+        res = await _submit_generation(
             [request.img_url],
             _stage1_prompt,
-            model=s.KIE_GHIBLI_MODEL,
+            model=s.GHIBLI_MODEL,
             negative_prompt=s.NEGATIVE_PROMPT_PIC_TO_GHIBLI,
         )
         _log.info("[%s] Stage 1 submit done in %.2fs — code=%s", _req_id, _time.monotonic() - _t_s1_submit, res.get("code"))
@@ -710,10 +673,10 @@ async def automated_pipeline(request: GhibliQRRequest):
         )
         if s.ENABLE_IDENTITY_CHECK and identity_result and identity_result.drift_detected:
             retry_accepted = False
-            retry_res = await _kie_submit(
+            retry_res = await _submit_generation(
                 [request.img_url],
                 _stage1_prompt,
-                model=s.KIE_GHIBLI_MODEL,
+                model=s.GHIBLI_MODEL,
                 negative_prompt=s.NEGATIVE_PROMPT_PIC_TO_GHIBLI,
             )
             if retry_res["code"] == 200:
@@ -781,9 +744,9 @@ async def automated_pipeline(request: GhibliQRRequest):
 
         for attempt in range(1, 4):
             _t_s2_submit = _time.monotonic()
-            _log.info("[%s] Stage 2 attempt %d/3 — model=%s", _req_id, attempt, s.KIE_COMPOSE_MODEL)
-            res2 = await _kie_submit(
-                [ghibli_local_url, qr_lock_url_path], _stage2_prompt, model=s.KIE_COMPOSE_MODEL
+            _log.info("[%s] Stage 2 attempt %d/3 — model=%s", _req_id, attempt, s.COMPOSE_MODEL)
+            res2 = await _submit_generation(
+                [ghibli_local_url, qr_lock_url_path], _stage2_prompt, model=s.COMPOSE_MODEL
             )
             _log.info("[%s] Stage 2 attempt %d submit done in %.2fs — code=%s", _req_id, attempt, _time.monotonic() - _t_s2_submit, res2.get("code"))
             if res2.get("code") != 200:
@@ -863,7 +826,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                 _rehosted_img, _rehosted_url = await _rehost_stage2(final_image_url)
                 _log.info("Stage 2 re-hosted: %s", _rehosted_url)
             except Exception as _rh_err:
-                _log.warning("Stage 2 re-host failed, falling back to KIE URL: %s", _rh_err)
+                _log.warning("Stage 2 re-host failed, falling back to provider URL: %s", _rh_err)
 
             if _rehosted_img is not None and _rehosted_url is not None:
                 # Validate from in-memory PIL image — no duplicate download
@@ -874,7 +837,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                 )
                 response_url = _rehosted_url
             else:
-                # Fallback: validate directly from the original KIE URL
+                # Fallback: validate directly from the original provider URL
                 qr_validation = await asyncio.to_thread(
                     validate_qr_from_image_url,
                     image_url=final_image_url,

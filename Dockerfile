@@ -100,7 +100,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # - --host 0.0.0.0: Listen on all network interfaces (required for Docker)
 # - --port 8010: Default port (set in config.py, can override with env var)
 # - --workers 1: CRITICAL — Must stay at 1 worker
-#   Reason: pending_tasks dict is in-memory only; multiple workers won't see
-#   webhook callbacks from other processes. Use --workers N only if migrating
-#   pending_tasks to Redis (see README Deployment section).
+#   Reason: the in-memory pending_tasks dict delivers each generation result to the
+#   awaiting request in-process; multiple workers would not share it. Use
+#   --workers N only after moving pending_tasks to a shared store (e.g. Redis).
 CMD ["uvicorn", "src.ghibli_portrait.main:app", "--host", "0.0.0.0", "--port", "8010", "--workers", "1"]

@@ -32,7 +32,7 @@ def _parse_ttl_hours(env_var: str, default: int) -> int:
 
 class Settings:
     # QR Settings
-    QR_VERSION = 1 # Ranges from 1 - 40
+    QR_VERSION = 1  # Ranges from 1 - 40
     QR_FILL_COLOR = "white"
     QR_BACK_COLOR = "#2a2d42"
     QR_SHORT_CODE_LENGTH = int(os.getenv('SHORT_CODE_LENGTH', 8))
@@ -42,31 +42,30 @@ class Settings:
     QR_LOCK_MIN_WIDTH_RATIO = 0.22
     QR_LOCK_MAX_WIDTH_RATIO = 0.32
 
+    # Paths — static assets and the served temp directory.
     BASE_PATH = Path(__file__).parent.parent
     STATIC_PATH = BASE_PATH / 'static'
     LOCK_PATH = STATIC_PATH / 'lock.png'
     TMP_PATH = STATIC_PATH / 'tmp'
 
-    # Kie Settings
-    KIE_API_KEY = os.getenv("KIE_API_KEY")
-    # Backward-compat single model (legacy)
-    KIE_IMG_MODEL = os.getenv("KIE_IMG_MODEL")
+    # Optional: also save final images on THIS machine (not only served via URL).
+    # When SAVE_OUTPUT_LOCAL is enabled, every final_ image is additionally written
+    # to OUTPUT_DIR. The API response and the served /tmp URL are unchanged.
+    SAVE_OUTPUT_LOCAL = os.getenv("SAVE_OUTPUT_LOCAL", "false").lower() in {"1", "true", "yes"}
+    OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
 
-    # Stage 1 model — recommended: flux-kontext-pro (subject-consistent style transfer)
-    #   flux-kontext-pro  — balanced quality + speed, preserves subject identity
-    #   flux-kontext-max  — highest quality, slower
-    #   qwen/image-edit   — legacy fallback, known to drift identity
-    # Stage 2 model — seedream handles multi-image composition (QR lock overlay)
-    KIE_GHIBLI_MODEL = os.getenv("KIE_GHIBLI_MODEL", KIE_IMG_MODEL)
-    KIE_COMPOSE_MODEL = os.getenv("KIE_COMPOSE_MODEL", KIE_IMG_MODEL)
-    KIE_CREATE_TASK_API = 'https://api.kie.ai/api/v1/jobs/createTask'
+    # Generation model LABELS reported in the API response's "model" field.
+    # Kept at the previous values for backward-compatible response contract — the
+    # external integration may read this string. The ACTUAL model is ARK_MODEL
+    # (see seedream_service); these are response labels only.
+    GHIBLI_MODEL = os.getenv("GHIBLI_MODEL", "qwen/image-edit")     # Stage 1 (/v1/ghibli response model)
+    COMPOSE_MODEL = os.getenv("COMPOSE_MODEL", "seedream/4.5-edit") # Stage 2 (/v1/ghibli-qr response model)
 
-    # Server Settings
+    # Server Settings — public/base address used to build the returned image URLs.
     DOMAIN = os.getenv("DOMAIN")
-    CALL_BACK = (DOMAIN.rstrip('/') if DOMAIN else "") +  '/v1/ghibli/callback'
 
     # Validation Settings
-    # If enabled, requests without a detectable face will be rejected before calling KIE.
+    # If enabled, requests without a detectable face are rejected before generation.
     REQUIRE_HUMAN_FACE = os.getenv("REQUIRE_HUMAN_FACE", "true").lower() in {"1", "true", "yes"}
     # Reject if more than this number of faces are detected (set to 0 to disable the limit).
     MAX_FACES = int(os.getenv("MAX_FACES", "1"))
@@ -75,38 +74,15 @@ class Settings:
     # Max concurrent MediaPipe face-detection operations.
     # Controls CPU ceiling on shared servers: lower = less CPU, more queue wait (~2.5s/slot).
     MAX_MEDIAPIPE_CONCURRENCY = int(os.getenv("MAX_MEDIAPIPE_CONCURRENCY", "15"))
-    # Max concurrent KIE API task submissions (all stages — Stage 1, Stage 2, identity retry —
-    # share one limit because they share the same API key and the same KIE rate limit).
-    # Prevents burst rate-limit failures under concurrent load. Lower = safer vs rate limit;
-    # higher = shorter queue wait. 4 is conservative — webhook waits (50–150 s) dominate wall time.
-    KIE_CONCURRENCY_LIMIT = int(os.getenv("KIE_CONCURRENCY_LIMIT", "4"))
 
-    # Enable post-generation identity drift check. Disable when using a model that
-    # consistently triggers false positives (e.g. qwen/image-edit with Ghibli style).
-    # Re-enable once a proper img2img model (e.g. flux-kontext-pro) is configured.
+    # Max concurrent image-generation submissions to the provider (BytePlus ARK).
+    # ARK allows up to 10 concurrent requests per model per primary account; staying
+    # below that avoids queueing/429. 8 leaves headroom; lower it if you hit rate limits.
+    GENERATION_CONCURRENCY_LIMIT = int(os.getenv("GENERATION_CONCURRENCY_LIMIT", "8"))
+
+    # Enable post-generation identity drift check. Disable when the model triggers
+    # false positives consistently. Re-enable with a strong identity-preserving model.
     ENABLE_IDENTITY_CHECK = os.getenv("ENABLE_IDENTITY_CHECK", "false").lower() in {"1", "true", "yes"}
-
-    # Stage 1 fidelity controls — maximize identity preservation.
-    # Passed to the model if supported; silently ignored otherwise.
-    STAGE1_IMAGE_STRENGTH = 0.35      # Low = closer to source (less transformation)
-    STAGE1_DENOISE = 0.30             # Low denoising preserves original structure
-    STAGE1_FIDELITY = 0.95            # High fidelity to reference image
-    STAGE1_REFERENCE_STRENGTH = 0.95  # Max reference/guidance strength
-
-    # Stage 2 composition identity preservation controls.
-    # Passed to the model when it supports them; silently ignored otherwise.
-    # Lower than Stage 1 — composition needs some freedom to place the QR element,
-    # but high enough to anchor the subject's identity from the first image.
-    STAGE2_FIDELITY = float(os.getenv("STAGE2_FIDELITY", "0.85"))
-    STAGE2_REFERENCE_STRENGTH = float(os.getenv("STAGE2_REFERENCE_STRENGTH", "0.85"))
-    # Qwen-specific generation quality controls
-    STAGE1_GUIDANCE_SCALE = float(os.getenv("STAGE1_GUIDANCE_SCALE", "4.0"))
-    STAGE1_NUM_INFERENCE_STEPS = int(os.getenv("STAGE1_NUM_INFERENCE_STEPS", "28"))
-    STAGE1_ACCELERATION = os.getenv("STAGE1_ACCELERATION", "none")
-    # Output stability — fixed seed and format for consistent results
-    KIE_SEED = int(os.getenv("KIE_SEED", "42"))
-    KIE_OUTPUT_FORMAT = os.getenv("KIE_OUTPUT_FORMAT", "jpeg")
-    KIE_IMAGE_SIZE = os.getenv("KIE_IMAGE_SIZE", "square")
 
     # TTL for files in static/tmp/ — differentiated by filename prefix.
     # stage1_* and qrlock_* are intermediate assets; final_* are client deliverables.
@@ -140,8 +116,7 @@ class Settings:
         "Flat solid background RGB(255, 255, 255). No shadows, no gradients, no scenery."
     )
 
-    # Negative prompt for Stage 1 — passed when the model supports it (qwen).
-    # flux-kontext models ignore this field entirely.
+    # Negative prompt for Stage 1 — passed when the model supports it.
     NEGATIVE_PROMPT_PIC_TO_GHIBLI = (
         "photorealistic, photograph, realistic lighting, camera photo, "
         "generic anime face, identity drift, race change, skin tone change, beautification, "
@@ -171,19 +146,12 @@ class Settings:
 # Warn early so misconfiguration is visible in startup logs, not at first request.
 if not Settings.DOMAIN:
     _log.warning(
-        "DOMAIN env var is not set. CALL_BACK will be a relative URL and KIE webhooks "
-        "will never reach this server — all tasks will time out."
-    )
-if not Settings.KIE_API_KEY:
-    _log.warning("KIE_API_KEY env var is not set. All image generation requests will fail.")
-if Settings.KIE_COMPOSE_MODEL and Settings.KIE_COMPOSE_MODEL.startswith("flux-kontext"):
-    _log.warning(
-        "KIE_COMPOSE_MODEL is set to '%s' (flux-kontext). "
-        "flux-kontext only accepts a single image — Stage 2 QR composition requires a multi-image model "
-        "(e.g. seedream). Set KIE_COMPOSE_MODEL to the correct model or Stage 2 will always fail.",
-        Settings.KIE_COMPOSE_MODEL,
+        "DOMAIN env var is not set. Returned image URLs will be relative/unreachable — "
+        "set DOMAIN to this server's reachable address (e.g. http://<host>:<port>)."
     )
 if Settings.PERSIST_FINAL_IMAGES:
     _log.info("PERSIST_FINAL_IMAGES=true — final_ images will never be auto-deleted.")
 else:
     _log.info("Final image retention TTL: %dh (set PERSIST_FINAL_IMAGES=true to keep indefinitely).", Settings.FINAL_IMAGE_TTL_HOURS)
+if Settings.SAVE_OUTPUT_LOCAL:
+    _log.info("SAVE_OUTPUT_LOCAL=true — final images are also saved to %s", Settings.OUTPUT_DIR)

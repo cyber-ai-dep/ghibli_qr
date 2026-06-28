@@ -7,12 +7,18 @@ import asyncio
 import os
 import time
 
+# Make the project root importable when run as a standalone script from tests/manual/.
+import sys as _sys, pathlib as _pathlib
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[2]))
+
 import httpx
 import numpy as np
 from PIL import Image
 from qreader import QReader
 
-from src.ghibli_portrait.services import seedream_service as s
+# Test-only pipeline helpers + prompts (alongside this script). It re-exports the
+# ARK_* settings too, so `s.single_shot_ghibli_qr`, `s.download_to`, `s.ARK_API_URL` all work.
+import seedream_pipeline as s
 
 IMAGES = [
     "https://i.ibb.co/gL7nVMXZ/Screenshot-2025-04-24-200200.png",
