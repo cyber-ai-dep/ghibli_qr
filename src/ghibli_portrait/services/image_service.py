@@ -182,10 +182,15 @@ async def generate_img(
         # Inline all references so ARK does not need to fetch from this server.
         inlined = [await _inline_ref(r) for r in refs]
 
+        # The model label from the caller (GHIBLI_MODEL / COMPOSE_MODEL) is the real
+        # model used for generation AND reported back in the response.
+        chosen_model = model or ARK_MODEL
+
         t0 = time.monotonic()
         ark_result = await seedream_generate(
             prompt,
             images=inlined,
+            model=chosen_model,
             size=ARK_IMAGE_SIZE,
             watermark=ARK_WATERMARK,
             negative_prompt=negative_prompt,
@@ -199,7 +204,7 @@ async def generate_img(
             return {"code": 501, "msg": f"ARK returned no image URL: {ark_result}"}
 
         task_id = uuid4().hex
-        callback = _build_success_callback(task_id, url, cost_time, model or ARK_MODEL)
+        callback = _build_success_callback(task_id, url, cost_time, chosen_model)
         asyncio.create_task(_deliver(task_id, callback))
 
         _log.info("[ARK] task %s done in %ss -> %s", task_id, cost_time, url[:60])

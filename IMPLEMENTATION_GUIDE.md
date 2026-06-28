@@ -137,8 +137,8 @@ See `.env.example` for the full list. Key variables:
 DOMAIN=http://<host>:30820     # base address for returned image URLs
 ARK_API_KEY=<byteplus-ark-key> # generation credential
 # ARK_MODEL / ARK_IMAGE_SIZE / ARK_SEED / ARK_WATERMARK  (optional overrides)
-GHIBLI_MODEL=qwen/image-edit   # response "model" label (Stage 1)
-COMPOSE_MODEL=seedream/4.5-edit# response "model" label (Stage 2)
+GHIBLI_MODEL=seedream-4-5-251128   # real model for Stage 1 (also reported in response)
+COMPOSE_MODEL=seedream-4-5-251128  # real model for Stage 2 (also reported in response)
 REQUIRE_HUMAN_FACE=true
 MAX_MEDIAPIPE_CONCURRENCY=15
 GENERATION_CONCURRENCY_LIMIT=8 # ARK allows ≤10 concurrent per model

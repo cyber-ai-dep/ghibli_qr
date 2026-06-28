@@ -232,7 +232,7 @@ async def get_short_url(url: str):
     summary="Transform portrait to Ghibli style",
     description=(
         "Transform a single portrait image to Ghibli-style art. "
-        f"Powered by {s.GHIBLI_MODEL}. "
+        "Powered by BytePlus ARK (Seedream). "
         "Validation: public URL, single image, face detection, human verification."
     ),
     response_model=ApiSuccessResponse,
@@ -272,16 +272,7 @@ async def transform2ghibli(request: Image2GhibliRequest):
                 ).model_dump(by_alias=True)
             )
 
-        if not s.GHIBLI_MODEL:
-            return JSONResponse(
-                status_code=500,
-                content=internal_error_response(
-                    message="GHIBLI_MODEL not configured",
-                    stage=ErrorStage.ORCHESTRATION,
-                ).model_dump(by_alias=True)
-            )
-
-        # Semaphore + rate-limit retry via _submit_generation
+        # Semaphore + rate-limit retry via _submit_generation.
         res = await _submit_generation(**request.model_dump(), model=s.GHIBLI_MODEL)
 
         if res["code"] != 200:
@@ -473,7 +464,7 @@ async def delete_qr_lock(img_id: str):
         "**Primary production endpoint.** "
         "Two-stage pipeline: (1) Transform portrait to Ghibli style, "
         "(2) Compose with QR code lock screen. "
-        f"Stage 1: {s.GHIBLI_MODEL}, Stage 2: {s.COMPOSE_MODEL}. "
+        "Powered by BytePlus ARK (Seedream). "
         "Input image must be a real human portrait photo."
     ),
     response_model=ApiSuccessResponse,
@@ -488,7 +479,7 @@ async def automated_pipeline(request: GhibliQRRequest):
     Automated two-stage pipeline for Ghibli + QR composition.
 
     Layer 4 (Orchestration): Coordinates validation and generation stages.
-    Models: GHIBLI_MODEL (stage 1), COMPOSE_MODEL (stage 2).
+    Both stages generate via BytePlus ARK (Seedream); the response reports ARK_MODEL.
     """
     _req_id = uuid4().hex[:8]
     _t0 = _time.monotonic()
@@ -512,24 +503,6 @@ async def automated_pipeline(request: GhibliQRRequest):
                     code=validation_result.code,
                     stage=validation_result.stage,
                     error_type=validation_result.error_type,
-                ).model_dump(by_alias=True),
-            )
-
-        if not s.GHIBLI_MODEL:
-            return JSONResponse(
-                status_code=500,
-                content=internal_error_response(
-                    message="GHIBLI_MODEL not configured",
-                    stage=ErrorStage.ORCHESTRATION,
-                ).model_dump(by_alias=True),
-            )
-
-        if not s.COMPOSE_MODEL:
-            return JSONResponse(
-                status_code=500,
-                content=internal_error_response(
-                    message="COMPOSE_MODEL not configured",
-                    stage=ErrorStage.ORCHESTRATION,
                 ).model_dump(by_alias=True),
             )
 

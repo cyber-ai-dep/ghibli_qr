@@ -28,13 +28,12 @@ I/O is async (httpx); only MediaPipe/PIL run in a thread pool, capped by a semap
 DOMAIN=http://<host>:30820          # base address for returned image URLs (no webhook)
 ARK_API_KEY=<byteplus-ark-key>
 
-# Generation (BytePlus ARK / Seedream) — optional overrides (defaults in seedream_service.py)
-# ARK_MODEL=seedream-4-5-251128
-# ARK_IMAGE_SIZE=2K
+# Generation (BytePlus ARK / Seedream)
+GHIBLI_MODEL=seedream-4-5-251128      # real model for Stage 1 (also reported in response)
+COMPOSE_MODEL=seedream-4-5-251128     # real model for Stage 2 (also reported in response)
+# ARK_IMAGE_SIZE=2K                   # optional ARK overrides (defaults in seedream_service.py)
 # ARK_SEED=42                         # -1 = random
 # ARK_WATERMARK=false
-GHIBLI_MODEL=qwen/image-edit          # response "model" label (Stage 1)
-COMPOSE_MODEL=seedream/4.5-edit       # response "model" label (Stage 2)
 
 # Validation
 REQUIRE_HUMAN_FACE=true
@@ -59,8 +58,9 @@ PERSIST_FINAL_IMAGES=false
 HOST_PORT=30820
 ```
 
-> `GHIBLI_MODEL` / `COMPOSE_MODEL` are only labels echoed in the response `model`
-> field (kept for a backward-compatible contract); the actual model is `ARK_MODEL`.
+> `GHIBLI_MODEL` / `COMPOSE_MODEL` are the real ARK model used per stage (set in
+> `.env`) and are reported in the response `model` field. `ARK_MODEL` is only the
+> fallback default when no per-stage model is given.
 
 ## Response Envelope
 

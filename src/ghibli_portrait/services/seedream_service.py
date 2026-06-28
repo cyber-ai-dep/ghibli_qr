@@ -60,6 +60,7 @@ async def seedream_generate(
     prompt: str,
     images: Optional[List[str]] = None,
     *,
+    model: str = ARK_MODEL,
     size: str = ARK_IMAGE_SIZE,
     watermark: bool = ARK_WATERMARK,
     negative_prompt: Optional[str] = None,
@@ -69,6 +70,7 @@ async def seedream_generate(
 
     `images`: list of image references (URL or data URI). A single ref is sent as a
     string, multiple refs as an array — both accepted by Seedream for editing/merge.
+    `model`: ARK model id to generate with (defaults to ARK_MODEL).
 
     The REST endpoint has no dedicated negative-prompt field, so the negative prompt
     is appended to the main prompt as an explicit "Avoid:" clause.
@@ -78,7 +80,7 @@ async def seedream_generate(
         full_prompt = f"{prompt}\n\nAvoid: {negative_prompt}"
 
     body = {
-        "model": ARK_MODEL,
+        "model": model or ARK_MODEL,
         "prompt": full_prompt,
         "sequential_image_generation": "disabled",
         "response_format": "url",

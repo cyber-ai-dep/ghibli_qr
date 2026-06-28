@@ -234,11 +234,12 @@ Host port is configurable: `HOST_PORT=8090 docker-compose up -d`.
 |---|---|---|---|
 | `DOMAIN` | Yes | — | Base address used to build returned image URLs (no trailing slash) |
 | `ARK_API_KEY` | Yes | — | BytePlus ARK (Seedream) API key |
-| `ARK_MODEL` | No | `seedream-4-5-251128` | ARK model id |
+| `GHIBLI_MODEL` | No | `seedream-4-5-251128` | Real model for Stage 1 (also reported in response `model`) |
+| `COMPOSE_MODEL` | No | `seedream-4-5-251128` | Real model for Stage 2 (also reported in response `model`) |
+| `ARK_MODEL` | No | `seedream-4-5-251128` | Fallback ARK model id when no per-stage model is given |
 | `ARK_IMAGE_SIZE` | No | `2K` | Output size |
 | `ARK_SEED` | No | `42` | Fixed seed (`-1` = random) |
 | `ARK_WATERMARK` | No | `false` | Add ARK watermark |
-| `GHIBLI_MODEL` / `COMPOSE_MODEL` | No | `seedream` | Stage labels reported in the response |
 | `REQUIRE_HUMAN_FACE` | No | `true` | Face-detection gate |
 | `MAX_FACES` | No | `1` | Max prominent faces (0 = unlimited) |
 | `MIN_FACE_AREA_RATIO` | No | `0.03` | Minimum face-to-image area ratio |

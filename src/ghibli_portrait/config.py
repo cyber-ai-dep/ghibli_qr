@@ -54,12 +54,10 @@ class Settings:
     SAVE_OUTPUT_LOCAL = os.getenv("SAVE_OUTPUT_LOCAL", "false").lower() in {"1", "true", "yes"}
     OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
 
-    # Generation model LABELS reported in the API response's "model" field.
-    # Kept at the previous values for backward-compatible response contract — the
-    # external integration may read this string. The ACTUAL model is ARK_MODEL
-    # (see seedream_service); these are response labels only.
-    GHIBLI_MODEL = os.getenv("GHIBLI_MODEL", "qwen/image-edit")     # Stage 1 (/v1/ghibli response model)
-    COMPOSE_MODEL = os.getenv("COMPOSE_MODEL", "seedream/4.5-edit") # Stage 2 (/v1/ghibli-qr response model)
+    # Real generation model per stage (BytePlus ARK / Seedream). Set in .env; this
+    # exact value is the model sent to ARK AND reported in the response "model" field.
+    GHIBLI_MODEL = os.getenv("GHIBLI_MODEL", "seedream-4-5-251128")    # Stage 1 (portrait → Ghibli)
+    COMPOSE_MODEL = os.getenv("COMPOSE_MODEL", "seedream-4-5-251128")  # Stage 2 (Ghibli + QR composition)
 
     # Server Settings — public/base address used to build the returned image URLs.
     DOMAIN = os.getenv("DOMAIN")
