@@ -91,55 +91,63 @@ class Settings:
     # When true, final_ images are never auto-deleted regardless of TTL.
     # Use explicit boolean — never encode "never delete" as a magic TTL value.
     PERSIST_FINAL_IMAGES: bool = os.getenv("PERSIST_FINAL_IMAGES", "false").lower() in {"1", "true", "yes"}
-
-    # Prompts
     PROMPT_PIC_TO_GHIBLI = (
-        "Convert this photo into a Studio Ghibli hand-painted illustration. "
-        "Apply the full Ghibli visual style: soft watercolor backgrounds, warm painterly color palette, "
-        "clean expressive linework, cel-shaded lighting, lush atmospheric depth, and the characteristic "
-        "hand-drawn Ghibli texture throughout every surface.\n\n"
-        "IDENTITY LOCK — never change these:\n"
-        "Same person, same face structure, same skin tone, same ethnicity, same race.\n"
-        "Same hairstyle, same facial hair, same expression.\n"
-        "Same clothing, same pose, same hands, same background composition.\n"
-        "SKIN COLOR IS ABSOLUTE: reproduce the exact skin tone from the photo. "
-        "Dark skin stays dark. Light skin stays light. Zero tolerance for lightening or whitening.\n\n"
-        "STYLE CHANGE — only these:\n"
-        "Render everything as a hand-painted Ghibli illustration.\n"
-        "Apply Ghibli color grading, line art, and painterly texture.\n"
-        "Make it look like a frame from a Studio Ghibli film.\n\n"
-        "DO NOT: replace the face, change ethnicity, lighten/darken skin, "
-        "use a generic anime face, beautify, or alter facial proportions.\n\n"
-        "Result: the exact same person rendered as a Ghibli film character.\n"
-        "Flat solid background RGB(255, 255, 255). No shadows, no gradients, no scenery."
+        "Studio Ghibli hand-painted illustration of this exact person, based strictly on "
+        "what is visibly present in the source photo — do not infer, guess, or add anything not seen. "
+        "do not lighten, whiten, or tan-wash the skin under any circumstance. "
+
+        "SKIN TONE AND LIGHTING: First, identify this exact person's actual skin tone as shown in the "
+        "source photo — it may be light, medium, tan, brown, or deep/dark brown. Whatever that tone is, "
+        "preserve it exactly; do not shift it lighter or darker than what is shown. "
+        "Any bright highlights on the nose, cheeks, forehead, or mouth area in the source photo are light "
+        "REFLECTING off the skin, NOT a different, lighter skin color underneath — this is true regardless "
+        "of whether the skin is light or dark. Stylize these highlights as a lighter SHADE of the person's "
+        "OWN skin tone — brighten the value/luminance only, never shift the hue toward a different skin "
+        "tone category (e.g. never toward tan or beige if the person has dark skin; never toward a darker "
+        "tone if the person has light skin). The entire face must read as one consistent skin color family "
+        "from darkest shadow to brightest highlight. Two-tone or patchy skin, or any highlight that looks "
+        "like a different person's skin color, is a failure. Treat this the same way you would paint a "
+        "highlight on any smooth material of a given color — like dark wood, tan leather, or pale marble — "
+        "it gets lighter and shinier, it does not turn a different material or color. "
+
+        "HIJAB: If this person is wearing a hijab or head covering, it is fabric that fully seals the "
+        "hairline — there is no hair anywhere near the face because the covering physically blocks it "
+        "from view, the same way a hood or helmet would. Do not draw a hairline, part, bangs, fringe, or "
+        "loose strands at the forehead, temples, ears, or neck, even stylistically. The fabric meets the "
+        "skin directly at the forehead and temples with a clean edge — treat the space where hair would "
+        "normally be as covered fabric, not as an area to fill in with hair. "
+        "If this person is NOT wearing a hijab or head covering in the original photo, do not add one — "
+        "render the hair exactly as shown, fully visible, same length, style, and color as the original. "
+
+        "Do not add facial hair, beard, mustache, or stubble unless clearly visible in the original photo. "
+        "Preserve identical face, gender, skin tone, ethnicity, expression, pose, and clothing — only "
+        "change the art style, not the person. "
+        "Soft watercolor background, warm painterly colors, clean linework, cel-shaded lighting. "
+        "Flat white background, no scenery, no shadows."
     )
 
-    # Negative prompt for Stage 1 — passed when the model supports it.
     NEGATIVE_PROMPT_PIC_TO_GHIBLI = (
+        "two-tone skin, patchy skin, blotchy skin, mismatched skin patches, lighter skin patch on face, "
+        "highlight rendered as different skin color, discolored skin, uneven skin tone, "
+        "lightened skin, whitewashed skin, darkened skin, pale skin, skin tone shift, tan-wash, "
+        "race change, altered ethnicity, "
+        "hair under hijab, hair peeking out, bangs, fringe, hairline showing under hijab, "
+        "hair at temples, hair at forehead, loose strands near hijab, visible part line, "
+        "added hijab, unwanted head covering, headscarf on person not wearing one, "
+        "beard, mustache, stubble, unwanted facial hair, "
         "photorealistic, photograph, realistic lighting, camera photo, "
-        "generic anime face, identity drift, race change, skin tone change, beautification, "
-        "face replacement, facial simplification, different person, "
-        "altered ethnicity, altered hairstyle, altered expression"
+        "generic anime face, identity drift, beautification, face replacement, "
+        "facial simplification, different person, altered hairstyle, altered expression"
     )
-
     PROMPT_GHIBLI_LOCK = (
-        "Compose these two images: the Ghibli illustrated person from the first image "
-        "is holding the QR code lock from the second image with both hands in front of their body.\n\n"
-        "The QR code lock must be fully visible, centered, and not cropped — "
-        "sharp, high-contrast, square, and fully scannable.\n\n"
-        "SKIN COLOR IS ABSOLUTE — this is the most critical rule:\n"
-        "The skin tone must exactly match the person in the first image. "
-        "Dark skin stays dark. Light skin stays light. "
-        "Zero tolerance for lightening, whitening, brightening, or any skin tone shift.\n\n"
-        "IDENTITY LOCK — preserve exactly from the first image:\n"
-        "Same face, same skin tone, same ethnicity, same race.\n"
-        "Same hair, same clothing, same expression, same proportions.\n"
-        "Same Ghibli illustration style and painterly texture throughout.\n\n"
-        "DO NOT change: face, skin tone, hair, clothing, or Ghibli art style.\n"
-        "DO NOT lighten, darken, or shift any colors on the person.\n\n"
-        "Clean solid background RGB(255, 255, 255). No shadows, no gradients."
+        "Front-facing portrait photo pose, medium shot, subject centered and squared to camera, "
+        "looking directly at viewer. Same Ghibli-style person from image 1, holding the QR lock "
+        "from image 2 with both hands at chest height, lock centered, about one-third the image "
+        "width, fully visible and sharp. Exactly two hands, both the person's own—no extra hands, "
+        "no extra fingers, no side angle, no profile view. Preserve exact face, gender, skin tone, "
+        "hair or hijab exactly as shown in image 1 (do not add or remove either), and clothing "
+        "from image 1. Flat white background, no shadows."
     )
-
 
 # Warn early so misconfiguration is visible in startup logs, not at first request.
 if not Settings.DOMAIN:

@@ -143,6 +143,21 @@ async def _submit_generation(*args, **kwargs) -> dict:
 _DOWNLOAD_HEADERS = {"User-Agent": "ghibli-qr/0.1"}
 
 
+def _save_local_copy(img: _PILImage.Image, filename: str, quality: int = 92) -> None:
+    """When SAVE_OUTPUT_LOCAL is enabled, also write an on-disk copy to OUTPUT_DIR.
+
+    OUTPUT_DIR is not covered by the /tmp TTL cleanup loop (see main.py
+    _tmp_cleanup_loop), so this is how stage1_/final_ images can be kept for
+    local inspection past their tmp TTL without growing static/tmp unbounded.
+    """
+    if not s.SAVE_OUTPUT_LOCAL:
+        return
+    out_dir = s.OUTPUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    img.save(out_dir / filename, format="JPEG", quality=quality, optimize=True)
+    _log.info("Saved local copy: %s", out_dir / filename)
+
+
 async def _rehost_stage2(remote_url: str):
     """Download Stage 2 output and save locally at full resolution.
 
@@ -165,14 +180,7 @@ async def _rehost_stage2(remote_url: str):
         path = s.TMP_PATH / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         img.save(path, format="JPEG", quality=95, optimize=True)
-
-        # Optional: keep a local copy on this machine (path from OUTPUT_DIR config).
-        if s.SAVE_OUTPUT_LOCAL:
-            out_dir = s.OUTPUT_DIR
-            out_dir.mkdir(parents=True, exist_ok=True)
-            img.save(out_dir / filename, format="JPEG", quality=95, optimize=True)
-            _log.info("Saved local copy of final image: %s", out_dir / filename)
-
+        _save_local_copy(img, filename, quality=95)
         return img, s.DOMAIN + "/tmp/" + filename
 
     img, local_url = await asyncio.to_thread(_save)
@@ -526,14 +534,14 @@ async def automated_pipeline(request: GhibliQRRequest):
         # STAGE 1: Submit Ghibli generation (native async HTTP)
         # =====================================================================
         _t_s1_submit = _time.monotonic()
-        _log.info("[%s] Stage 1 submit — model=%s", _req_id, s.GHIBLI_MODEL)
+        _log.info("[%s] Stage 1 attempt 1/1 — model=%s", _req_id, s.GHIBLI_MODEL)
         res = await _submit_generation(
             [request.img_url],
             _stage1_prompt,
             model=s.GHIBLI_MODEL,
             negative_prompt=s.NEGATIVE_PROMPT_PIC_TO_GHIBLI,
         )
-        _log.info("[%s] Stage 1 submit done in %.2fs — code=%s", _req_id, _time.monotonic() - _t_s1_submit, res.get("code"))
+        _log.info("[%s] Stage 1 attempt 1 submit done in %.2fs — code=%s", _req_id, _time.monotonic() - _t_s1_submit, res.get("code"))
         if res["code"] != 200:
             return JSONResponse(
                 status_code=500,
@@ -625,6 +633,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                     img.thumbnail((1024, 1024), _PILImage.LANCZOS)
                 filename = f"stage1_{uuid4()}.jpg"
                 img.save(s.TMP_PATH / filename, format="JPEG", quality=92, optimize=True)
+                _save_local_copy(img, filename)
                 return img, s.DOMAIN + "/tmp/" + filename
 
             ghibli_img, ghibli_local_url = await asyncio.to_thread(_save_stage1)
@@ -673,6 +682,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                                 img.thumbnail((1024, 1024), _PILImage.LANCZOS)
                             filename = f"stage1_{uuid4()}.jpg"
                             img.save(s.TMP_PATH / filename, format="JPEG", quality=92, optimize=True)
+                            _save_local_copy(img, filename)
                             return img, s.DOMAIN + "/tmp/" + filename
 
                         retry_img, retry_local_url = await asyncio.to_thread(_save_retry)
@@ -858,6 +868,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                 ),
                 data={
                     "resultUrls": last_result_urls,
+                    "stage1Url": ghibli_local_url,
                     "model": last_webhook_result_2.data.model if last_webhook_result_2 else None,
                     "costTime": stage1_cost + stage2_cost,
                     "quality": "basic",
