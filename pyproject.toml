@@ -17,6 +17,9 @@ dependencies = [
     "uvicorn>=0.40.0",
     "httpx>=0.28.1",
     "qreader>=3.16",
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+    "open-clip-torch>=2.24.0",
 ]
 
 [dependency-groups]
@@ -28,6 +31,15 @@ test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
