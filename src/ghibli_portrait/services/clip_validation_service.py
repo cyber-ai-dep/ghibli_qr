@@ -14,13 +14,14 @@ it into the request pipeline. Nothing in the existing pipeline is touched by
 this file.
 
 Approach: embed the image once, compare cosine similarity against text
-prompts for five classes, and take the highest-scoring class:
+prompts for six classes, and take the highest-scoring class:
 
     "human"    (real photograph of ONE person)  -> pass
     "cartoon"  (cartoon / anime / game render)  -> reject
     "animal"   (photo of an animal)             -> reject
     "render"   (digital art / 3D render)        -> reject
     "multiple" (photo of two or more people)    -> reject
+    "no_human" (scene/object/landscape, nobody in it) -> reject
 
 The "multiple" class exists because CLIP's single-person "human" prompts
 alone cannot tell a solo portrait from a group photo — both are equally "a
@@ -73,6 +74,7 @@ _CARTOON_LABEL = "a cartoon, anime, or video game character"
 _ANIMAL_LABEL = "a photo of an animal"
 _RENDER_LABEL = "digital art or a 3D render"
 _MULTIPLE_LABEL = "a photo of multiple people together"
+_NO_HUMAN_LABEL = "a photo with no human person in it"
 
 # Canonical label -> ensemble of phrasings averaged into that label's text embedding.
 # Kept intentionally varied in framing (candid/studio/portrait/phone-camera, different
@@ -93,6 +95,10 @@ _PROMPT_TEMPLATES: Dict[str, List[str]] = {
         "a smooth, soft studio-lit portrait photograph of one person with dramatic lighting",
         "a magazine-style editorial photograph of a single real person",
         "a stock photo of one real person with a watermark overlay",
+        "a moody, low-key lit portrait photograph of a real person",
+        "a dramatic chiaroscuro-lit photograph of a person's face with deep shadows",
+        "a high-contrast black and white portrait photograph of a real person",
+        "a real person's face lit by strong directional or side lighting",
     ],
     _CARTOON_LABEL: [
         "a cartoon, anime, or video game character",
@@ -121,6 +127,34 @@ _PROMPT_TEMPLATES: Dict[str, List[str]] = {
         "a family photo with several people in frame",
         "a photo of a crowd of people",
         "friends standing together in a group picture",
+        "a close-up photo of two or three people's faces together",
+        "a tight portrait shot with more than one person visible",
+        "a duo portrait of two people posing closely together",
+        "several faces close together in one frame",
+        "a moody, dramatically lit photo of several people together",
+        "a high-contrast or low-key lit photo of a group of people",
+    ],
+    _NO_HUMAN_LABEL: [
+        "a photo with no human person in it",
+        "an empty room with no people",
+        "a landscape or nature photo with nobody in it",
+        "a photo of an object or still life, no people present",
+        "an empty street or building with no people visible",
+        "a photo of furniture, food, or scenery with no person in frame",
+        "a close-up photo of a hand, finger, or other body part with no face visible",
+        "an abstract photo or textured background, not a portrait",
+        "a blurry, out-of-focus, or heavily filtered image with no visible face",
+        "a silhouette or shadow with no visible face or features",
+        "a photo of skin, fabric, or texture in close-up, not a person's face",
+        "a design element, film grain, or graphic background texture",
+        "two hands or arms reaching toward each other, with faces cropped out of frame",
+        "a close-up of people's hands touching or almost touching, no faces in the photo",
+        "a store mannequin or display dummy with a smooth, featureless plastic face",
+        "a mannequin head with no real facial features, not a real person",
+        "a person whose face is completely covered, hidden, or shrouded by cloth or fabric",
+        "a silhouette of a person seen through frosted glass or fog, face not visible",
+        "a photo where the person's face is so heavily motion-blurred it is unrecognizable",
+        "a person photographed with their face turned away or fully obscured in shadow",
     ],
 }
 
@@ -215,9 +249,22 @@ class ClipValidationResult:
     code: Optional[str] = None
     message: str = ""
     label: str = ""
+    category: str = ""  # one of: "human", "human_multifaces", "not_human", "animals"
     scores: Dict[str, float] = field(default_factory=dict)
     error: Optional[str] = None
 
+
+# Canonical bucket name for each raw CLIP label — the four ground-truth
+# categories used in tests/manual/test_clip_validation_manual.py. Only the
+# "human" category is accepted; the other three are all rejected.
+_CATEGORY: Dict[str, str] = {
+    _HUMAN_LABEL: "human",
+    _MULTIPLE_LABEL: "human_multifaces",
+    _CARTOON_LABEL: "not_human",
+    _RENDER_LABEL: "not_human",
+    _NO_HUMAN_LABEL: "not_human",
+    _ANIMAL_LABEL: "animals",
+}
 
 # Rejection codes chosen to match the existing V1 error contract documented in
 # docs/usage.md, so that IF this is later wired in, responses stay compatible.
@@ -226,6 +273,7 @@ _REJECTION_CODE: Dict[str, str] = {
     _ANIMAL_LABEL: "NO_FACE_DETECTED",
     _RENDER_LABEL: "NOT_REAL_PHOTO",
     _MULTIPLE_LABEL: "MULTIPLE_FACES",
+    _NO_HUMAN_LABEL: "NO_FACE_DETECTED",
 }
 _REJECTION_MESSAGE: Dict[str, str] = {
     _CARTOON_LABEL: (
@@ -241,6 +289,9 @@ _REJECTION_MESSAGE: Dict[str, str] = {
     ),
     _MULTIPLE_LABEL: (
         "Multiple people detected. Please provide a single-person portrait."
+    ),
+    _NO_HUMAN_LABEL: (
+        "No human face detected. Please provide a clear portrait photo of a person."
     ),
 }
 
@@ -263,9 +314,13 @@ def validate_human_portrait(img: Image.Image, image_url: str = "") -> ClipValida
             error=result.error,
         )
 
+    category = _CATEGORY.get(result.label, "not_human")
+
     if result.label == _HUMAN_LABEL:
         _logger.info({"url": image_url, "scores": result.scores, "decision": "ACCEPT"})
-        return ClipValidationResult(ok=True, label=result.label, scores=result.scores)
+        return ClipValidationResult(
+            ok=True, label=result.label, category=category, scores=result.scores
+        )
 
     _logger.info({
         "url": image_url,
@@ -281,5 +336,6 @@ def validate_human_portrait(img: Image.Image, image_url: str = "") -> ClipValida
             "Image does not appear to be a real human portrait photo.",
         ),
         label=result.label,
+        category=category,
         scores=result.scores,
     )
