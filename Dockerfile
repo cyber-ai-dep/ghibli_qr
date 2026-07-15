@@ -68,9 +68,18 @@ COPY --from=builder /opt/venv /opt/venv
 # - PATH: Use venv Python first
 # - PYTHONUNBUFFERED: Log output immediately (no buffering)
 # - PYTHONDONTWRITEBYTECODE: Don't create .pyc files (saves space in container)
+# - OMP/MKL_NUM_THREADS=1: pin OpenMP/MKL thread pools before the process starts,
+#   so torch's per-inference thread count (see clip_validation_service._load_clip,
+#   which also calls torch.set_num_threads(1)) can't oversubscribe the host's cores
+#   under a burst of concurrent CLIP calls.
+# - CLIP_CACHE_DIR: where CLIP weights are baked in below, and where the app
+#   loads them from at runtime — must match on both sides.
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    CLIP_CACHE_DIR=/app/.cache/clip
 
 # Copy entire application code from host to container
 COPY . .
@@ -80,6 +89,13 @@ COPY . .
 # On first startup, it will auto-create if it doesn't exist
 RUN mkdir -p src/static/tmp
 
+# Bake CLIP weights (~578MB) into the image at build time so no container ever
+# downloads them at runtime — a cold runtime download can take seconds to tens
+# of seconds depending on egress and would otherwise time out the first client
+# request. Must run after COPY (needs the app's dependency versions resolved
+# in the venv) and requires build-time network access to fetch the checkpoint.
+RUN python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-32-quickgelu', pretrained='openai', cache_dir='/app/.cache/clip')"
+
 # Expose the API port
 # Default port is 8010 (configurable via docker run -p)
 EXPOSE 8010
@@ -88,9 +104,10 @@ EXPOSE 8010
 # - Tests: GET /v1/health endpoint (liveness probe)
 # - Interval: Check every 30 seconds
 # - Timeout: Fail if response takes >10 seconds
-# - Start grace: Wait 40 seconds after container start before first check
+# - Start grace: Wait 60 seconds after container start before first check
+#   (covers CLIP preload at startup — import + model build, weights already baked in)
 # - Retries: Mark unhealthy after 3 consecutive failures
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:8010/v1/health', timeout=5)" || exit 1
 
 # ============================================================================

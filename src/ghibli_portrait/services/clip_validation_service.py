@@ -1,17 +1,17 @@
 """
-CLIP Zero-Shot Validation Service (standalone, not yet wired into the pipeline)
+CLIP Zero-Shot Validation Service (wired into Stage 1 validation)
 
-Zero-shot semantic classification of an image using CLIP embeddings, as a
-candidate replacement for the heuristic pairing of "zero faces detected ->
-probably an animal" MediaPipe inference plus the separate pixel-statistics
-`_is_synthetic_face` check in validation_service.py.
+Zero-shot semantic classification of an image using CLIP embeddings. Replaces
+the heuristic pairing of "zero faces detected -> probably an animal" MediaPipe
+inference plus the separate pixel-statistics `_is_synthetic_face` check that
+validation_service.py used to run — `validate_stage1_human_portrait()` now
+calls `validate_human_portrait()` below directly.
 
 This module is intentionally self-contained: it does NOT import anything
 from validation_service.py, config.py, or any other part of the app, so it
 can be exercised and evaluated entirely on its own (see
-tests/test_clip_validation_service.py) before any decision is made to wire
-it into the request pipeline. Nothing in the existing pipeline is touched by
-this file.
+tests/manual/test_clip_validation_manual.py). Callers reach it only through
+`validate_human_portrait()` / `preload()`.
 
 Approach: embed the image once, compare cosine similarity against text
 prompts for six classes, and take the highest-scoring class:
@@ -55,12 +55,20 @@ per image.
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from PIL import Image
 
 _logger = logging.getLogger("clip_validation_service")
+
+# Where CLIP weights are cached/loaded from. Set explicitly in the Docker image
+# (see Dockerfile) to match where weights are baked in at build time, so no
+# runtime download happens on a fresh container. Left unset (None) outside
+# Docker so open_clip falls back to its own default cache location.
+_CLIP_CACHE_DIR = os.getenv("CLIP_CACHE_DIR")
 
 # OpenAI's released CLIP checkpoints were trained with the QuickGELU activation;
 # the plain "ViT-B-32" config defaults to standard GELU, which silently loads
@@ -166,42 +174,76 @@ _clip_model = None
 _clip_preprocess = None
 _text_features = None  # normalized, ensembled text embeddings, shape (len(_LABELS), dim)
 
+# Guards _load_clip() against a load race when concurrent requests hit an
+# empty cache at once: without it, each thread builds its own ~1.5GB model
+# copy, and a partial-init race can publish _clip_model before _text_features
+# is set (image_features @ None.T). The guard variable (_clip_model) is
+# published last, after every other global is in its final state.
+_load_lock = threading.Lock()
+
 
 def _load_clip() -> None:
     """Load the CLIP model/preprocess pipeline and precompute ensembled text embeddings, once."""
     global _clip_model, _clip_preprocess, _text_features
-    if _clip_model is not None:
+    if _clip_model is not None:  # fast path, no lock
         return
 
-    import torch
-    import open_clip
+    with _load_lock:
+        if _clip_model is not None:  # re-check inside the lock
+            return
 
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        _MODEL_NAME, pretrained=_PRETRAINED
-    )
-    model.eval()
-    tokenizer = open_clip.get_tokenizer(_MODEL_NAME)
+        import torch
+        import open_clip
 
-    with torch.no_grad():
-        label_features = []
-        for label in _LABELS:
-            templates = _PROMPT_TEMPLATES[label]
-            tokens = tokenizer(templates)
-            feats = model.encode_text(tokens)
-            feats = feats / feats.norm(dim=-1, keepdim=True)
-            mean_feat = feats.mean(dim=0)
-            mean_feat = mean_feat / mean_feat.norm()
-            label_features.append(mean_feat)
-        text_features = torch.stack(label_features)
+        # CLIP via torch grabs every core per inference by default. Pinning to 1
+        # thread here (before the model/text features are built) makes each
+        # inference single-threaded, so a dedicated semaphore (routes.py
+        # _clip_sem) can size real parallelism to the core count instead of
+        # oversubscribing under a burst of concurrent requests.
+        torch.set_num_threads(1)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            pass  # interop threads can only be set once; ignore if already set
 
-    _clip_model = model
-    _clip_preprocess = preprocess
-    _text_features = text_features
-    _logger.info(
-        "CLIP model loaded: %s (%s), %d classes ensembled from %d total prompts",
-        _MODEL_NAME, _PRETRAINED, len(_LABELS),
-        sum(len(v) for v in _PROMPT_TEMPLATES.values()),
-    )
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            _MODEL_NAME, pretrained=_PRETRAINED, cache_dir=_CLIP_CACHE_DIR,
+        )
+        model.eval()
+        tokenizer = open_clip.get_tokenizer(_MODEL_NAME)
+
+        with torch.no_grad():
+            label_features = []
+            for label in _LABELS:
+                templates = _PROMPT_TEMPLATES[label]
+                tokens = tokenizer(templates)
+                feats = model.encode_text(tokens)
+                feats = feats / feats.norm(dim=-1, keepdim=True)
+                mean_feat = feats.mean(dim=0)
+                mean_feat = mean_feat / mean_feat.norm()
+                label_features.append(mean_feat)
+            text_features = torch.stack(label_features)
+
+        _clip_preprocess = preprocess
+        _text_features = text_features
+        _clip_model = model  # published last: the fast-path guard is now safe
+        _logger.info(
+            "CLIP model loaded: %s (%s), %d classes ensembled from %d total prompts",
+            _MODEL_NAME, _PRETRAINED, len(_LABELS),
+            sum(len(v) for v in _PROMPT_TEMPLATES.values()),
+        )
+
+
+def preload() -> None:
+    """Public warm-up entry point — call once from the app lifespan (main.py).
+
+    Pays the ~2.3s model-load cost (or a one-time weights download if the
+    cache is cold) at startup instead of on the first live request.
+    Intentionally does not catch exceptions: a load failure should crash
+    startup so the process supervisor (restart: on-failure) retries, rather
+    than serve an instance that will fail every validation call.
+    """
+    _load_clip()
 
 
 @dataclass

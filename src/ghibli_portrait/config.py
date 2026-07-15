@@ -69,9 +69,16 @@ class Settings:
     MAX_FACES = int(os.getenv("MAX_FACES", "1"))
     # Minimum face area ratio (face_bbox_area / image_area). Helps reject tiny/far faces.
     MIN_FACE_AREA_RATIO = float(os.getenv("MIN_FACE_AREA_RATIO", "0.03"))
-    # Max concurrent MediaPipe face-detection operations.
-    # Controls CPU ceiling on shared servers: lower = less CPU, more queue wait (~2.5s/slot).
+    # Max concurrent MediaPipe face-detection operations. MediaPipe is no longer
+    # called from the request path (see CLIP_CONCURRENCY_LIMIT below) — kept
+    # defined, unreferenced, alongside the MediaPipe code it used to size.
     MAX_MEDIAPIPE_CONCURRENCY = int(os.getenv("MAX_MEDIAPIPE_CONCURRENCY", "15"))
+
+    # Max concurrent CLIP classification operations (Stage 1 human-portrait gate).
+    # CLIP inference is pinned to 1 torch thread per call (see
+    # clip_validation_service._load_clip), so this sizes real parallelism —
+    # start near the vCPU count with a small margin (e.g. 6 on an 8 vCPU host).
+    CLIP_CONCURRENCY_LIMIT = int(os.getenv("CLIP_CONCURRENCY_LIMIT", "4"))
 
     # Max concurrent image-generation submissions to the provider (BytePlus ARK).
     # ARK allows up to 10 concurrent requests per model per primary account; staying

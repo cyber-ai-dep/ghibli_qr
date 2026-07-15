@@ -54,7 +54,6 @@ from src.ghibli_portrait.models.schemas import (
     ErrorType,
     ErrorStage,
 )
-from src.ghibli_portrait.services.identity_check import check_identity_drift_async
 from src.ghibli_portrait.services.image_service import generate_img
 from src.ghibli_portrait.services.qr_service import get_qr
 from src.ghibli_portrait.services.qr_validation import validate_qr_from_image, validate_qr_from_image_url, QRValidationResult
@@ -93,10 +92,11 @@ router = APIRouter(prefix="/v1")
 pending_tasks: Dict[str, asyncio.Future] = {}
 s = Settings()
 
-# Limits concurrent MediaPipe executions to cap CPU usage on shared servers.
-# Requests beyond this limit queue and proceed as slots free (~2.5s per slot).
-# Tune via MAX_MEDIAPIPE_CONCURRENCY env var (default 15).
-_mediapipe_sem = asyncio.Semaphore(int(s.MAX_MEDIAPIPE_CONCURRENCY))
+# Limits concurrent CLIP classification calls to cap CPU usage on shared servers.
+# CLIP inference is pinned to 1 torch thread per call, so this semaphore's size IS
+# the real parallelism — oversized values oversubscribe the host's cores under a burst.
+# Tune via CLIP_CONCURRENCY_LIMIT env var (default 4; start near vCPU count with margin).
+_clip_sem = asyncio.Semaphore(int(s.CLIP_CONCURRENCY_LIMIT))
 
 # Limits concurrent image-generation submissions to the provider (BytePlus ARK) to
 # prevent rate-limit errors under burst load. All stages (Stage 1, Stage 2, identity
@@ -265,9 +265,9 @@ async def transform2ghibli(request: Image2GhibliRequest):
                 ).model_dump(by_alias=True)
             )
 
-        # Async download + MediaPipe in thread (no event loop blocking)
-        # Semaphore passed in — applied only around MediaPipe (~2s), not download (~10s)
-        validation_result, _ = await validate_real_human_image_async(request.img_urls[0], settings=s, mediapipe_sem=_mediapipe_sem)
+        # Async download + CLIP classification in thread (no event loop blocking)
+        # Semaphore passed in — applied only around CLIP inference, not download (~10s)
+        validation_result, _ = await validate_real_human_image_async(request.img_urls[0], settings=s, clip_sem=_clip_sem)
         if not validation_result.ok:
             return JSONResponse(
                 status_code=422,
@@ -494,13 +494,13 @@ async def automated_pipeline(request: GhibliQRRequest):
     _log.info("[%s] Pipeline start — img=%s qr_url=%s", _req_id, request.img_url.split("/")[-1], request.url[:40])
     try:
         # ---------------------------------------------------------------------
-        # Layers 1,2,3A: validate (async download + MediaPipe in thread)
-        # Semaphore passed in — applied only around MediaPipe (~2s), not download (~10s).
+        # Layers 1,2,3A: validate (async download + CLIP classification in thread)
+        # Semaphore passed in — applied only around CLIP inference, not download (~10s).
         # Downloads run concurrently with no limit (async, zero CPU).
-        # source_img is reused for identity check — avoids a second download.
+        # source_img is reused for skin-tone extraction — avoids a second download.
         # ---------------------------------------------------------------------
         _t_val = _time.monotonic()
-        validation_result, source_img = await validate_real_human_image_async(request.img_url, settings=s, mediapipe_sem=_mediapipe_sem)
+        validation_result, source_img = await validate_real_human_image_async(request.img_url, settings=s, clip_sem=_clip_sem)
         _log.info("[%s] Validation done in %.1fs — ok=%s code=%s", _req_id, _time.monotonic() - _t_val, validation_result.ok, getattr(validation_result, "code", None))
         if not validation_result.ok:
             return JSONResponse(
@@ -645,67 +645,6 @@ async def automated_pipeline(request: GhibliQRRequest):
                     stage=ErrorStage.STAGE2_QR,
                 ).model_dump(by_alias=True)
             )
-
-        # =====================================================================
-        # IDENTITY DRIFT GUARD (controlled by ENABLE_IDENTITY_CHECK env var)
-        # =====================================================================
-        identity_result = (
-            await check_identity_drift_async(source_img, ghibli_img)
-            if s.ENABLE_IDENTITY_CHECK else None
-        )
-        if s.ENABLE_IDENTITY_CHECK and identity_result and identity_result.drift_detected:
-            retry_accepted = False
-            retry_res = await _submit_generation(
-                [request.img_url],
-                _stage1_prompt,
-                model=s.GHIBLI_MODEL,
-                negative_prompt=s.NEGATIVE_PROMPT_PIC_TO_GHIBLI,
-            )
-            if retry_res["code"] == 200:
-                task_id_retry = retry_res["data"]["taskId"]
-                retry_future = asyncio.get_running_loop().create_future()
-                pending_tasks[task_id_retry] = retry_future
-                try:
-                    retry_webhook = await asyncio.wait_for(retry_future, timeout=300)
-                    if not retry_webhook.is_failure:
-                        _retry_urls = retry_webhook.data.get_result_urls() or []
-                        retry_url = _retry_urls[0] if _retry_urls else None
-
-                        async with httpx.AsyncClient(timeout=60) as client:
-                            retry_resp = await client.get(retry_url, headers=_DOWNLOAD_HEADERS)
-                            retry_resp.raise_for_status()
-                        _retry_content = retry_resp.content
-
-                        def _save_retry():
-                            img = _PILImage.open(_io.BytesIO(_retry_content)).convert("RGB")
-                            if max(img.size) > 1024:
-                                img.thumbnail((1024, 1024), _PILImage.LANCZOS)
-                            filename = f"stage1_{uuid4()}.jpg"
-                            img.save(s.TMP_PATH / filename, format="JPEG", quality=92, optimize=True)
-                            _save_local_copy(img, filename)
-                            return img, s.DOMAIN + "/tmp/" + filename
-
-                        retry_img, retry_local_url = await asyncio.to_thread(_save_retry)
-                        retry_identity = await check_identity_drift_async(source_img, retry_img)
-                        if not retry_identity.drift_detected:
-                            ghibli_local_url = retry_local_url
-                            stage1_cost += retry_webhook.data.costTime
-                            retry_accepted = True
-                except (asyncio.TimeoutError, Exception):
-                    pass
-                finally:
-                    pending_tasks.pop(task_id_retry, None)
-
-            if not retry_accepted:
-                return JSONResponse(
-                    status_code=500,
-                    content=external_error_response(
-                        message="Stage 1 could not preserve the subject's identity",
-                        code="IDENTITY_DRIFT_DETECTED",
-                        stage=ErrorStage.STAGE1_GHIBLI,
-                        detail=f"Identity drift: {identity_result.reason if identity_result else 'unknown'}",
-                    ).model_dump(by_alias=True)
-                )
 
         # =====================================================================
         # STAGE 2: Compose Ghibli + QR lock (native async HTTP) — up to 3 attempts

@@ -18,16 +18,26 @@ services:
 
     environment:
       PYTHONUNBUFFERED: "1"
+      # Pin OpenMP/MKL thread pools so torch's per-CLIP-inference single-thread
+      # setting (see clip_validation_service._load_clip) isn't fought by a
+      # larger default — prevents oversubscription under concurrent requests.
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
 
     # Named volumes persist across container rebuilds and survive server moves
     # (when the same volume names exist on the new host).
-    # - ghibli_tmp:    generated images (QR locks, stage1, final outputs)
-    # - ghibli_models: MediaPipe face-detection model (avoids re-download)
+    # - ghibli_tmp: generated images (QR locks, stage1, final outputs)
+    # CLIP weights are baked into the image at build time (see Dockerfile), so
+    # no volume is needed for them. The MediaPipe model volume was removed —
+    # MediaPipe is no longer called from the request path.
     # lock.png is bind-mounted read-only so asset updates take effect without rebuild.
     volumes:
       - ghibli_tmp:/app/src/static/tmp
-      - ghibli_models:/app/src/ghibli_portrait/models
       - ./src/static/lock.png:/app/src/static/lock.png:ro
+
+    # Memory ceiling: one CLIP model copy is ~1.5GB RSS once loaded (--workers 1
+    # confirmed above via the Dockerfile CMD, so there is exactly one copy).
+    mem_limit: 2g
 
     # Health check
     healthcheck:
@@ -35,7 +45,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      # 60s start grace covers CLIP preload at startup (weights are baked in,
+      # so this is import + model build time, not a download).
+      start_period: 60s
 
     # Auto-restart on failure
     restart: unless-stopped
@@ -49,4 +61,3 @@ services:
 
 volumes:
   ghibli_tmp:
-  ghibli_models:

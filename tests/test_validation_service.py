@@ -4,8 +4,9 @@ synthetic-image detection, skin extraction, and the Stage 1 human-portrait gate.
 import pytest
 
 from src.ghibli_portrait.config import Settings
-from src.ghibli_portrait.models.schemas import ErrorStage
+from src.ghibli_portrait.models.schemas import ErrorStage, ErrorType
 from src.ghibli_portrait.services import validation_service as vs
+from src.ghibli_portrait.services.clip_validation_service import ClipValidationResult
 
 
 # ---------------------------------------------------------------- Layer 1: URL
@@ -89,41 +90,53 @@ def _settings(**over):
     return s
 
 
-def _fake_detection(face_count, faces=None):
-    return vs.FaceDetectionResult(ok=True, face_count=face_count, faces=faces or [])
+def _fake_clip(**over):
+    """Build a ClipValidationResult with sane accept defaults, overridden per test."""
+    defaults = dict(ok=True, label="a real photograph of one human person", category="human")
+    defaults.update(over)
+    return ClipValidationResult(**defaults)
 
 
-def test_stage1_accepts_single_real_face(monkeypatch, skin_image):
-    faces = [{"bbox": (10, 10, 40, 40), "score": 0.9, "area_ratio": 0.2}]
-    monkeypatch.setattr(vs, "_detect_faces", lambda img: _fake_detection(1, faces))
-    monkeypatch.setattr(vs, "_is_synthetic_face", lambda img, bbox: False)
+def test_stage1_accepts_human(monkeypatch, skin_image):
+    monkeypatch.setattr(vs, "validate_human_portrait", lambda img, url: _fake_clip())
     r = vs.validate_stage1_human_portrait(skin_image, "https://a/x.jpg", _settings())
     assert r.ok is True
 
 
-def test_stage1_rejects_no_face(monkeypatch, skin_image):
-    monkeypatch.setattr(vs, "_detect_faces", lambda img: _fake_detection(0))
+def test_stage1_rejects_no_human(monkeypatch, skin_image):
+    monkeypatch.setattr(vs, "validate_human_portrait", lambda img, url: _fake_clip(
+        ok=False, code="NO_FACE_DETECTED", message="No human face detected.", category="not_human",
+    ))
     r = vs.validate_stage1_human_portrait(skin_image, "https://a/x.jpg", _settings())
     assert r.ok is False and r.code == "NO_FACE_DETECTED"
 
 
-def test_stage1_rejects_multiple_faces(monkeypatch, skin_image):
-    faces = [
-        {"bbox": (10, 10, 40, 40), "score": 0.9, "area_ratio": 0.2},
-        {"bbox": (80, 80, 40, 40), "score": 0.9, "area_ratio": 0.2},
-    ]
-    monkeypatch.setattr(vs, "_detect_faces", lambda img: _fake_detection(2, faces))
-    monkeypatch.setattr(vs, "_is_synthetic_face", lambda img, bbox: False)
+def test_stage1_rejects_multiple_people(monkeypatch, skin_image):
+    monkeypatch.setattr(vs, "validate_human_portrait", lambda img, url: _fake_clip(
+        ok=False, code="MULTIPLE_FACES", message="Multiple people detected.", category="human_multifaces",
+    ))
     r = vs.validate_stage1_human_portrait(skin_image, "https://a/x.jpg", _settings())
     assert r.ok is False and r.code == "MULTIPLE_FACES"
 
 
 def test_stage1_rejects_synthetic(monkeypatch, skin_image):
-    faces = [{"bbox": (10, 10, 40, 40), "score": 0.9, "area_ratio": 0.2}]
-    monkeypatch.setattr(vs, "_detect_faces", lambda img: _fake_detection(1, faces))
-    monkeypatch.setattr(vs, "_is_synthetic_face", lambda img, bbox: True)
+    monkeypatch.setattr(vs, "validate_human_portrait", lambda img, url: _fake_clip(
+        ok=False, code="NOT_REAL_PHOTO", message="Image appears to be a cartoon or render.", category="not_human",
+    ))
     r = vs.validate_stage1_human_portrait(skin_image, "https://a/x.jpg", _settings())
     assert r.ok is False and r.code == "NOT_REAL_PHOTO"
+
+
+def test_stage1_maps_clip_failure_to_face_detector_failure(monkeypatch, skin_image):
+    """CLIP runtime failure must stay on the pre-existing FACE_DETECTOR_FAILURE /
+    SYSTEM_ERROR contract so the external API's error codes don't change."""
+    monkeypatch.setattr(vs, "validate_human_portrait", lambda img, url: _fake_clip(
+        ok=False, code="CLIP_CLASSIFIER_FAILURE", error="boom",
+    ))
+    r = vs.validate_stage1_human_portrait(skin_image, "https://a/x.jpg", _settings())
+    assert r.ok is False
+    assert r.code == "FACE_DETECTOR_FAILURE"
+    assert r.error_type == ErrorType.SYSTEM_ERROR
 
 
 def test_stage1_skipped_when_face_not_required(monkeypatch, skin_image):

@@ -63,6 +63,7 @@ from PIL import Image
 
 from src.ghibli_portrait.config import Settings
 from src.ghibli_portrait.models.schemas import ErrorType, ErrorStage
+from src.ghibli_portrait.services.clip_validation_service import validate_human_portrait
 
 # MediaPipe Tasks API imports
 try:
@@ -398,23 +399,28 @@ def validate_stage1_human_portrait(
     """
     Layer 3A: Stage 1 (Ghibli) human portrait validation.
 
-    MediaPipe-only face detection with strict rules:
-    - If MediaPipe detects a face → run synthetic-image check, then accept if real
-    - Multiple faces rejected only when secondary is visually significant
-    - Animal/cartoon rejection only when ZERO faces detected
-    - Detector failure returns SYSTEM_ERROR, not validation error
+    CLIP zero-shot classification (see clip_validation_service.py): a single
+    semantic call decides human / cartoon / animal / render / multiple-people /
+    no-human. MediaPipe face detection and the pixel-statistics synthetic-image
+    check are no longer called here (both stay defined above, unreferenced,
+    for tests and possible future use) — CLIP's "multiple people" label now
+    covers what the MediaPipe area-ratio multi-face gate used to.
+
+    Fail-closed: a CLIP runtime failure is mapped to the same
+    FACE_DETECTOR_FAILURE / SYSTEM_ERROR contract the old detector-failure
+    path used, so the external API contract is unchanged.
     """
     s = settings or _settings
 
     if not s.REQUIRE_HUMAN_FACE:
         return ValidationResultV1(ok=True, stage=ErrorStage.STAGE1_GHIBLI)
 
-    detection = _detect_faces(img)
+    clip_result = validate_human_portrait(img, image_url)
 
-    if not detection.ok:
+    if clip_result.code == "CLIP_CLASSIFIER_FAILURE":
         _validation_logger.error({
             "url": image_url,
-            "error": detection.error,
+            "error": clip_result.error,
             "decision": "SYSTEM_ERROR",
             "reason": "FACE_DETECTOR_FAILURE"
         })
@@ -426,72 +432,13 @@ def validate_stage1_human_portrait(
             stage=ErrorStage.STAGE1_GHIBLI
         )
 
-    face_count = detection.face_count
-    faces = detection.faces
-    face_detected = face_count > 0
-
-    if face_detected:
-        # Reliable detections: score >= 0.45 (above the 0.35 detection floor).
-        # Detections in the 0.35–0.44 range are marginal and commonly fire on dark
-        # skin shadows, hair mass, or reflections. Using them for policy decisions
-        # (primary selection, multi-face check) causes false MULTIPLE_FACES rejections
-        # on single-person dark-skinned portraits where a ghost box scores 0.37–0.44
-        # and the real face scores 0.90+. Reliable faces are used for all policy
-        # decisions; the raw list is only used as a fallback when no reliable face exists.
-        reliable_faces = [f for f in faces if f.get("score", 0.0) >= 0.45]
-        primary = reliable_faces[0] if reliable_faces else faces[0]
-
-        if len(reliable_faces) > 1:
-            # Reject if any reliable secondary face covers >= 2% of the image.
-            # 2% area floor: filters background clutter and MediaPipe ghost boxes.
-            # A real second person in frame will always be >= 2%.
-            # Score is already guaranteed >= 0.45 by the reliable_faces filter.
-            significant_secondary = [
-                f for f in reliable_faces[1:]
-                if f.get("area_ratio", 0.0) >= 0.02
-            ]
-            if significant_secondary:
-                _validation_logger.info({
-                    "url": image_url,
-                    "faceCount": face_count,
-                    "reliableFaceCount": len(reliable_faces),
-                    "significantSecondary": len(significant_secondary),
-                    "decision": "REJECT",
-                    "reason": "MULTIPLE_FACES",
-                })
-                return ValidationResultV1(
-                    ok=False,
-                    code="MULTIPLE_FACES",
-                    message="Multiple human faces detected. Please provide a single-person portrait.",
-                    error_type=ErrorType.VALIDATION_ERROR,
-                    stage=ErrorStage.STAGE1_GHIBLI
-                )
-
-        # Reject synthetic renders (3D game characters, cartoons) that trick MediaPipe.
-        face_bbox = primary.get("bbox")
-        if face_bbox and _is_synthetic_face(img, face_bbox):
-            _validation_logger.info({
-                "url": image_url,
-                "faceCount": face_count,
-                "decision": "REJECT",
-                "reason": "SYNTHETIC_IMAGE_DETECTED"
-            })
-            return ValidationResultV1(
-                ok=False,
-                code="NOT_REAL_PHOTO",
-                message="Image appears to be a 3D render, game character, or cartoon. Please provide a real human portrait photo.",
-                error_type=ErrorType.VALIDATION_ERROR,
-                stage=ErrorStage.STAGE1_GHIBLI
-            )
-
-        _validation_logger.info({"url": image_url, "faceCount": face_count, "decision": "ACCEPT"})
+    if clip_result.ok:
         return ValidationResultV1(ok=True, stage=ErrorStage.STAGE1_GHIBLI)
 
-    _validation_logger.info({"url": image_url, "faceCount": 0, "decision": "REJECT", "reason": "NO_FACE_DETECTED"})
     return ValidationResultV1(
         ok=False,
-        code="NO_FACE_DETECTED",
-        message="No human face detected. Please provide a clear portrait photo of a person.",
+        code=clip_result.code,
+        message=clip_result.message,
         error_type=ErrorType.VALIDATION_ERROR,
         stage=ErrorStage.STAGE1_GHIBLI
     )
@@ -583,7 +530,7 @@ async def validate_real_human_image_async(
     image_url: str,
     *,
     settings: Optional[Settings] = None,
-    mediapipe_sem=None,
+    clip_sem=None,
 ) -> tuple[ValidationResultV1, Optional[Image.Image]]:
     """
     Async validation for user-provided images (Layers 1, 2, 3A).
@@ -592,11 +539,11 @@ async def validate_real_human_image_async(
     - source_img is the decoded PIL Image when validation passes (ok=True).
     - source_img is None when validation fails early (Layer 1 or download error).
 
-    The caller can reuse source_img (e.g. for identity drift check) to avoid
+    The caller can reuse source_img (e.g. for skin-tone extraction) to avoid
     downloading the same URL a second time.
 
-    Downloads the image with httpx (non-blocking), then runs MediaPipe
-    face detection in a thread (CPU-bound). mediapipe_sem caps concurrent
+    Downloads the image with httpx (non-blocking), then runs CLIP
+    classification in a thread (CPU-bound). clip_sem caps concurrent
     CPU usage without blocking downloads.
     """
     import asyncio
@@ -624,9 +571,9 @@ async def validate_real_human_image_async(
             stage=ErrorStage.SOURCE_RESOLUTION,
         ), None
 
-    # Layer 3A: MediaPipe — CPU-bound (~2s). Semaphore applied here only.
-    if mediapipe_sem:
-        async with mediapipe_sem:
+    # Layer 3A: CLIP classification — CPU-bound. Semaphore applied here only.
+    if clip_sem:
+        async with clip_sem:
             result = await asyncio.to_thread(validate_stage1_human_portrait, img, image_url, s)
     else:
         result = await asyncio.to_thread(validate_stage1_human_portrait, img, image_url, s)

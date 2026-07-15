@@ -12,7 +12,7 @@ from src.ghibli_portrait.api.responses import error_response
 from src.ghibli_portrait.api.routes import router, TAGS_METADATA
 from src.ghibli_portrait.config import Settings
 from src.ghibli_portrait.models.schemas import ApiError, ErrorStage, ErrorType
-from src.ghibli_portrait.services.validation_service import _ensure_model_downloaded
+from src.ghibli_portrait.services.clip_validation_service import preload as _preload_clip
 
 _log = logging.getLogger(__name__)
 s = Settings()
@@ -90,8 +90,12 @@ async def lifespan(app: FastAPI):
     # Ensure tmp directory exists (missing on fresh clone → StaticFiles mount fails at startup).
     s.TMP_PATH.mkdir(parents=True, exist_ok=True)
 
-    # Pre-download MediaPipe model so the first request doesn't trigger a download.
-    await asyncio.to_thread(_ensure_model_downloaded)
+    # Preload CLIP (model + text embeddings) so the first request doesn't pay
+    # the ~2.3s load cost. Exceptions are intentionally not caught here — a
+    # load failure should crash startup so restart: on-failure retries,
+    # instead of serving an instance where every validation call will fail.
+    await asyncio.to_thread(_preload_clip)
+    _log.info("CLIP model preloaded at startup")
 
     # Log final image retention policy once at startup so operators can confirm config.
     if s.PERSIST_FINAL_IMAGES:
