@@ -103,6 +103,15 @@ class Settings:
         "what is visibly present in the source photo — do not infer, guess, or add anything not seen. "
         "do not lighten, whiten, or tan-wash the skin under any circumstance. "
 
+        "RACE AND ETHNICITY: Do not change this person's race or ethnicity in either direction. "
+        "If the person is Black, they must remain visibly Black in the output — do not lighten their "
+        "skin tone or shift their features toward a white or lighter-skinned appearance. If the person "
+        "is white, they must remain visibly white in the output — do not darken their skin tone or shift "
+        "their features toward a Black or darker-skinned appearance. This applies equally to every "
+        "ethnicity shown in the source photo (e.g. South Asian, East Asian, Latino, Middle Eastern, "
+        "Indigenous) — the person's real, visible race and ethnicity is not a stylistic choice and must "
+        "never be swapped, blended, or ambiguated. "
+
         "SKIN TONE AND LIGHTING: First, identify this exact person's actual skin tone as shown in the "
         "source photo — it may be light, medium, tan, brown, or deep/dark brown. Whatever that tone is, "
         "preserve it exactly; do not shift it lighter or darker than what is shown. "
@@ -137,7 +146,9 @@ class Settings:
         "two-tone skin, patchy skin, blotchy skin, mismatched skin patches, lighter skin patch on face, "
         "highlight rendered as different skin color, discolored skin, uneven skin tone, "
         "lightened skin, whitewashed skin, darkened skin, pale skin, skin tone shift, tan-wash, "
-        "race change, altered ethnicity, "
+        "race change, race swap, changed race, altered ethnicity, ethnicity swap, "
+        "black person made white, white person made black, whitewashing, blackwashing, "
+        "racial features altered, different racial appearance, "
         "hair under hijab, hair peeking out, bangs, fringe, hairline showing under hijab, "
         "hair at temples, hair at forehead, loose strands near hijab, visible part line, "
         "added hijab, unwanted head covering, headscarf on person not wearing one, "
@@ -152,8 +163,10 @@ class Settings:
         "from image 2 with both hands at chest height, lock centered, about one-third the image "
         "width, fully visible and sharp. Exactly two hands, both the person's own—no extra hands, "
         "no extra fingers, no side angle, no profile view. Preserve exact face, gender, skin tone, "
-        "hair or hijab exactly as shown in image 1 (do not add or remove either), and clothing "
-        "from image 1. Flat white background, no shadows."
+        "race, and ethnicity exactly as shown in image 1 — do not lighten, darken, or otherwise shift "
+        "the skin tone or racial appearance in either direction. Preserve hair or hijab exactly as "
+        "shown in image 1 (do not add or remove either), and clothing from image 1. "
+        "Flat white background, no shadows."
     )
 
 # Warn early so misconfiguration is visible in startup logs, not at first request.

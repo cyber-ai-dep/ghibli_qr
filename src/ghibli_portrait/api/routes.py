@@ -267,7 +267,7 @@ async def transform2ghibli(request: Image2GhibliRequest):
 
         # Async download + CLIP classification in thread (no event loop blocking)
         # Semaphore passed in — applied only around CLIP inference, not download (~10s)
-        validation_result, _ = await validate_real_human_image_async(request.img_urls[0], settings=s, clip_sem=_clip_sem)
+        validation_result, source_img = await validate_real_human_image_async(request.img_urls[0], settings=s, clip_sem=_clip_sem)
         if not validation_result.ok:
             return JSONResponse(
                 status_code=422,
@@ -279,6 +279,12 @@ async def transform2ghibli(request: Image2GhibliRequest):
                     error_type=validation_result.error_type,
                 ).model_dump(by_alias=True)
             )
+
+        # Skin color/tone from the source photo — reuses the already-decoded
+        # image so no extra download is needed.
+        skin_color_hex = None
+        if source_img is not None:
+            skin_color_hex = await asyncio.to_thread(extract_skin_color_hex, source_img)
 
         # Semaphore + rate-limit retry via _submit_generation.
         res = await _submit_generation(**request.model_dump(), model=s.GHIBLI_MODEL)
@@ -328,6 +334,7 @@ async def transform2ghibli(request: Image2GhibliRequest):
                         "costTime": webhook_result.data.costTime,
                         "quality": params.get("quality", "basic"),
                         "aspectRatio": params.get("aspect_ratio", "1:1"),
+                        "skinColor": skin_color_hex,
                     },
                 ).model_dump(by_alias=True)
             )
@@ -497,7 +504,6 @@ async def automated_pipeline(request: GhibliQRRequest):
         # Layers 1,2,3A: validate (async download + CLIP classification in thread)
         # Semaphore passed in — applied only around CLIP inference, not download (~10s).
         # Downloads run concurrently with no limit (async, zero CPU).
-        # source_img is reused for skin-tone extraction — avoids a second download.
         # ---------------------------------------------------------------------
         _t_val = _time.monotonic()
         validation_result, source_img = await validate_real_human_image_async(request.img_url, settings=s, clip_sem=_clip_sem)
@@ -514,21 +520,21 @@ async def automated_pipeline(request: GhibliQRRequest):
                 ).model_dump(by_alias=True),
             )
 
-        # Extract exact skin color from validated input image — inject into Stage 1 prompt
-        # so the model receives the precise hex value to match, not just a generic instruction.
-        _skin_hex = None
+        # Skin color/tone from the source photo — reuses the already-decoded
+        # image so no extra download is needed.
+        skin_color_hex = None
         if source_img is not None:
-            _skin_hex = await asyncio.to_thread(extract_skin_color_hex, source_img)
+            skin_color_hex = await asyncio.to_thread(extract_skin_color_hex, source_img)
 
         _stage1_prompt = s.PROMPT_PIC_TO_GHIBLI
-        if _skin_hex:
+        if skin_color_hex:
             _stage1_prompt += (
-                f"\n\nEXACT SKIN COLOR: {_skin_hex}. "
+                f"\n\nEXACT SKIN COLOR: {skin_color_hex}. "
                 "This is the person's real measured skin tone. "
                 "You MUST reproduce this exact color in the illustration. "
                 "Do NOT lighten, darken, whiten, or shift this color in any direction."
             )
-            _log.info("Stage 1 skin tone injected into prompt: %s", _skin_hex)
+            _log.info("[%s] Stage 1 skin tone injected into prompt: %s", _req_id, skin_color_hex)
 
         # =====================================================================
         # STAGE 1: Submit Ghibli generation (native async HTTP)
@@ -656,9 +662,9 @@ async def automated_pipeline(request: GhibliQRRequest):
         stage2_cost = 0
 
         _stage2_prompt = s.PROMPT_GHIBLI_LOCK
-        if _skin_hex:
+        if skin_color_hex:
             _stage2_prompt += (
-                f"\n\nEXACT SKIN COLOR: {_skin_hex}. "
+                f"\n\nEXACT SKIN COLOR: {skin_color_hex}. "
                 "This is the person's real measured skin tone from the first image. "
                 "You MUST reproduce this exact color on all skin in the composed image. "
                 "Do NOT lighten, darken, whiten, or shift this color in any direction."
@@ -812,6 +818,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                     "costTime": stage1_cost + stage2_cost,
                     "quality": "basic",
                     "aspectRatio": "1:1",
+                    "skinColor": skin_color_hex,
                     "qrValidation": {
                         "ok": last_qr_validation.ok if last_qr_validation else False,
                         "expectedPayload": request.url,

@@ -23,6 +23,10 @@ app.log
 tmp/
 static/tmp/
 src/static/tmp/
+src/static/tmp2/
 
 # Local saved final images (SAVE_OUTPUT_LOCAL)
 output/
+
+# CLIP manual validation run outputs
+tests/manual/clip_validation_results_*.csv
