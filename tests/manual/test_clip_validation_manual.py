@@ -130,7 +130,7 @@ IMAGES = [
     ("weman_black_torban.jpg", "https://images.pexels.com/photos/37774602/pexels-photo-37774602.jpeg", "HUMAN"),
     ("girl_black_dress.jpg", "https://images.pexels.com/photos/35875014/pexels-photo-35875014.jpeg", "HUMAN"),
     ("two_blond_girl.jpg", "https://images.pexels.com/photos/4457131/pexels-photo-4457131.jpeg", "HUMAN_MULTIFACES"),
-    ("girl_gray_image.jpg", "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTjCtzfojHe-ORf2kTCporw83HSkKhqhwAIWXDyicdzjQ&s", "HUMAN"),
+ 
 
 
     ("part_of_face.jpg", "https://images.pexels.com/photos/13302093/pexels-photo-13302093.jpeg", "HUMAN"),
