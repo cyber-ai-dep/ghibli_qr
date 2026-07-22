@@ -81,9 +81,14 @@ class Settings:
     CLIP_CONCURRENCY_LIMIT = int(os.getenv("CLIP_CONCURRENCY_LIMIT", "4"))
 
     # Max concurrent image-generation submissions to the provider (BytePlus ARK).
-    # ARK allows up to 10 concurrent requests per model per primary account; staying
-    # below that avoids queueing/429. 8 leaves headroom; lower it if you hit rate limits.
-    GENERATION_CONCURRENCY_LIMIT = int(os.getenv("GENERATION_CONCURRENCY_LIMIT", "8"))
+    # Official BytePlus limit is 500 IPM/RPM (throughput, not a connection cap) —
+    # see docs.byteplus.com/en/docs/ModelArk/1824718. This is I/O-bound (network
+    # wait), not CPU-bound, so it can safely run higher than CLIP_CONCURRENCY_LIMIT
+    # even on a CPU-constrained shared host. 24 measured (2026-07-22 load test):
+    # cut avg pipeline time 113.7s -> 48.0s and queue-wait 59.9% -> 4.4% vs the
+    # old default of 8, with zero 429s — 24 req/batch still stays far under the
+    # 500/min ceiling. Raise further only after confirming with a fresh load test.
+    GENERATION_CONCURRENCY_LIMIT = int(os.getenv("GENERATION_CONCURRENCY_LIMIT", "24"))
 
     # Enable post-generation identity drift check. Disable when the model triggers
     # false positives consistently. Re-enable with a strong identity-preserving model.

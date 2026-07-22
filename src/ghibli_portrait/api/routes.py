@@ -100,7 +100,7 @@ _clip_sem = asyncio.Semaphore(int(s.CLIP_CONCURRENCY_LIMIT))
 
 # Limits concurrent image-generation submissions to the provider (BytePlus ARK) to
 # prevent rate-limit errors under burst load. All stages (Stage 1, Stage 2, identity
-# retry) share this one semaphore. Tune via GENERATION_CONCURRENCY_LIMIT env var (default 8).
+# retry) share this one semaphore. Tune via GENERATION_CONCURRENCY_LIMIT env var (default 24).
 _gen_sem = asyncio.Semaphore(s.GENERATION_CONCURRENCY_LIMIT)
 
 # Substrings in the provider's error message that indicate a rate-limit response.
