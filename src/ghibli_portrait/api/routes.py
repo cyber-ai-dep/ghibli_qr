@@ -98,6 +98,11 @@ s = Settings()
 # Tune via CLIP_CONCURRENCY_LIMIT env var (default 4; start near vCPU count with margin).
 _clip_sem = asyncio.Semaphore(int(s.CLIP_CONCURRENCY_LIMIT))
 
+# Limits concurrent Layer-2 image downloads. I/O-bound (not CPU), so this is an
+# internal safety cap against an accidental burst rather than a CPU concern.
+# Tune via DOWNLOAD_CONCURRENCY_LIMIT env var (default 24).
+_download_sem = asyncio.Semaphore(int(s.DOWNLOAD_CONCURRENCY_LIMIT))
+
 # Limits concurrent image-generation submissions to the provider (BytePlus ARK) to
 # prevent rate-limit errors under burst load. All stages (Stage 1, Stage 2, identity
 # retry) share this one semaphore. Tune via GENERATION_CONCURRENCY_LIMIT env var (default 24).
@@ -266,8 +271,8 @@ async def transform2ghibli(request: Image2GhibliRequest):
             )
 
         # Async download + CLIP classification in thread (no event loop blocking)
-        # Semaphore passed in — applied only around CLIP inference, not download (~10s)
-        validation_result, source_img = await validate_real_human_image_async(request.img_urls[0], settings=s, clip_sem=_clip_sem)
+        # download_sem caps concurrent downloads, clip_sem caps concurrent CLIP inference
+        validation_result, source_img = await validate_real_human_image_async(request.img_urls[0], settings=s, clip_sem=_clip_sem, download_sem=_download_sem)
         if not validation_result.ok:
             return JSONResponse(
                 status_code=422,
@@ -502,11 +507,11 @@ async def automated_pipeline(request: GhibliQRRequest):
     try:
         # ---------------------------------------------------------------------
         # Layers 1,2,3A: validate (async download + CLIP classification in thread)
-        # Semaphore passed in — applied only around CLIP inference, not download (~10s).
-        # Downloads run concurrently with no limit (async, zero CPU).
+        # Two separate semaphores: download_sem caps concurrent downloads (I/O,
+        # DOWNLOAD_CONCURRENCY_LIMIT), clip_sem caps concurrent CLIP inference (CPU).
         # ---------------------------------------------------------------------
         _t_val = _time.monotonic()
-        validation_result, source_img = await validate_real_human_image_async(request.img_url, settings=s, clip_sem=_clip_sem)
+        validation_result, source_img = await validate_real_human_image_async(request.img_url, settings=s, clip_sem=_clip_sem, download_sem=_download_sem)
         _log.info("[%s] Validation done in %.1fs — ok=%s code=%s", _req_id, _time.monotonic() - _t_val, validation_result.ok, getattr(validation_result, "code", None))
         if not validation_result.ok:
             return JSONResponse(

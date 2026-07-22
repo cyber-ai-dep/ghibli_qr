@@ -77,7 +77,9 @@ class Settings:
     # Max concurrent CLIP classification operations (Stage 1 human-portrait gate).
     # CLIP inference is pinned to 1 torch thread per call (see
     # clip_validation_service._load_clip), so this sizes real parallelism —
-    # start near the vCPU count with a small margin (e.g. 6 on an 8 vCPU host).
+    # start near the vCPU count with a small margin, and lower it further on a
+    # shared host (e.g. a VPS also running the backend/DB) so a CLIP burst
+    # cannot starve those other processes of every core.
     CLIP_CONCURRENCY_LIMIT = int(os.getenv("CLIP_CONCURRENCY_LIMIT", "4"))
 
     # Max concurrent image-generation submissions to the provider (BytePlus ARK).
@@ -89,6 +91,13 @@ class Settings:
     # old default of 8, with zero 429s — 24 req/batch still stays far under the
     # 500/min ceiling. Raise further only after confirming with a fresh load test.
     GENERATION_CONCURRENCY_LIMIT = int(os.getenv("GENERATION_CONCURRENCY_LIMIT", "24"))
+
+    # Max concurrent Layer-2 image downloads (user-provided imgUrl fetch).
+    # Previously unbounded — a burst of simultaneous requests (accidental batch
+    # call, misconfigured internal caller) would open unlimited outbound
+    # connections at once. I/O-bound like generation, so this can stay generous;
+    # it exists as an internal safety cap, not a public-facing rate limit.
+    DOWNLOAD_CONCURRENCY_LIMIT = int(os.getenv("DOWNLOAD_CONCURRENCY_LIMIT", "24"))
 
     # Enable post-generation identity drift check. Disable when the model triggers
     # false positives consistently. Re-enable with a strong identity-preserving model.
