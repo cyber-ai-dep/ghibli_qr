@@ -45,6 +45,10 @@ docs/
 IMPLEMENTATION_GUIDE.md
 PROJECT_STATUS.md
 
+# Deployment manifests / CI config — not needed inside the image
+k8s/
+.github/
+
 # Runtime-generated files (recreated on startup)
 src/static/tmp/
 *.log

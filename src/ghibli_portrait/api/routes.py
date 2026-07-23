@@ -24,15 +24,9 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 
 _log = logging.getLogger(__name__)
-# Uvicorn's dictConfig does not attach handlers to application loggers, only to
-# its own "uvicorn.*" loggers. Add a StreamHandler here so [GEN] retry events
-# are visible in the log file (stderr → redirected by the nohup launch command).
-if not _log.handlers:
-    _h = logging.StreamHandler()
-    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s — %(message)s"))
-    _log.addHandler(_h)
-    _log.setLevel(logging.INFO)
-    _log.propagate = False  # prevent double-printing if root gets a handler later
+# Root logging is configured once, centrally, in main.py (logging.basicConfig)
+# before this module is imported — [GEN] retry events and everything else here
+# propagate to that handler with a consistent format across all modules.
 from PIL import Image as _PILImage
 
 from src.ghibli_portrait.api.responses import (

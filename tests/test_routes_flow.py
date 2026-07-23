@@ -97,7 +97,7 @@ def test_ghibli_qr_happy_path(client, monkeypatch):
     fake_img = Image.new("RGB", (64, 64), (200, 150, 120))
 
     # 1) validation passes, returns a decoded source image
-    async def fake_validate(image_url, *, settings=None, clip_sem=None):
+    async def fake_validate(image_url, *, settings=None, clip_sem=None, download_sem=None):
         return ValidationResultV1(ok=True, stage=ErrorStage.STAGE1_GHIBLI), fake_img
     monkeypatch.setattr(routes, "validate_real_human_image_async", fake_validate)
 
@@ -133,7 +133,7 @@ def test_ghibli_qr_happy_path(client, monkeypatch):
 def test_ghibli_qr_stage1_api_error(client, monkeypatch):
     fake_img = Image.new("RGB", (64, 64), (200, 150, 120))
 
-    async def fake_validate(image_url, *, settings=None, clip_sem=None):
+    async def fake_validate(image_url, *, settings=None, clip_sem=None, download_sem=None):
         return ValidationResultV1(ok=True, stage=ErrorStage.STAGE1_GHIBLI), fake_img
     monkeypatch.setattr(routes, "validate_real_human_image_async", fake_validate)
     monkeypatch.setattr(routes, "extract_skin_color_hex", lambda img: None)

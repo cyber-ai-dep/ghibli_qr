@@ -91,6 +91,13 @@ RUN mkdir -p src/static/tmp
 # in the venv) and requires build-time network access to fetch the checkpoint.
 RUN python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-32-quickgelu', pretrained='openai', cache_dir='/app/.cache/clip')"
 
+# Run as a non-root user — reduces blast radius if the process is ever
+# compromised. Created after the CLIP bake step (needs root to write into
+# /app/.cache) and chown'd so the app can still write to static/tmp/ and .cache.
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /usr/sbin/nologin appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 # Expose the API port
 # Default port is 8010 (configurable via docker run -p)
 EXPOSE 8010

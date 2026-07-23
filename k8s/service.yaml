@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ghibli-api
+  labels:
+    app: ghibli-api
+spec:
+  type: ClusterIP
+  selector:
+    app: ghibli-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8010

@@ -12,6 +12,9 @@ wheels/
 # Environment variables
 .env
 .env.backup.mohammad-kie
+
+# Kubernetes secret with real values (only secret.example.yaml is tracked)
+k8s/secret.yaml
 # Editor
 .vscode/
 

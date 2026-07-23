@@ -1,5 +1,17 @@
-import asyncio
 import logging
+import os
+
+# Configure the root logger before any other project module is imported, so
+# every module-level `logging.getLogger(__name__)` call (config.py, services/*)
+# picks up a real handler instead of Python's silent WARNING-only last-resort
+# handler. LOG_LEVEL is an env var so prod/staging/dev can differ without a
+# code change.
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+)
+
+import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager

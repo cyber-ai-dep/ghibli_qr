@@ -6,6 +6,15 @@ services:
 
     container_name: ghibli-api-v1
 
+    # Reap zombie processes and forward SIGTERM correctly to uvicorn for
+    # graceful shutdown (PID 1 in a container doesn't do this by default).
+    init: true
+
+    # Blocks privilege escalation (e.g. via setuid binaries) inside the
+    # container; the image already runs as a non-root user (see Dockerfile).
+    security_opt:
+      - no-new-privileges:true
+
     # Host port is configurable via HOST_PORT env var (default 30820).
     # Internal container port stays 8010 (matches uvicorn in Dockerfile CMD).
     # Example: HOST_PORT=8090 docker-compose up -d

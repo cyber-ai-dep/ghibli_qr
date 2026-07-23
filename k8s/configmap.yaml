@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ghibli-api-config
+data:
+  LOG_LEVEL: "INFO"
+  GHIBLI_MODEL: "seedream-4-5-251128"
+  COMPOSE_MODEL: "seedream-4-5-251128"
+  REQUIRE_HUMAN_FACE: "true"
+  MAX_FACES: "1"
+  MIN_FACE_AREA_RATIO: "0.03"
+  SHORT_CODE_LENGTH: "8"
+  ENABLE_IDENTITY_CHECK: "false"
+  CLIP_CONCURRENCY_LIMIT: "4"
+  DOWNLOAD_CONCURRENCY_LIMIT: "24"
+  GENERATION_CONCURRENCY_LIMIT: "24"
+  SAVE_OUTPUT_LOCAL: "false"
+  STAGE1_TTL_HOURS: "2"
+  QRLOCK_TTL_HOURS: "2"
+  FINAL_IMAGE_TTL_HOURS: "24"
+  PERSIST_FINAL_IMAGES: "false"
+  # DOMAIN must be the externally reachable address for this Service/Ingress —
+  # set per environment (dev/staging/prod), not baked in here.
+  DOMAIN: "<set-per-environment>"
