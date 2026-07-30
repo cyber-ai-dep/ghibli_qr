@@ -111,9 +111,12 @@ class Settings:
     STAGE1_TTL_HOURS: int = _parse_ttl_hours("STAGE1_TTL_HOURS", 2)
     QRLOCK_TTL_HOURS: int = _parse_ttl_hours("QRLOCK_TTL_HOURS", 2)
     FINAL_IMAGE_TTL_HOURS: int = _parse_ttl_hours("FINAL_IMAGE_TTL_HOURS", 24)
-    # When true, final_ images are never auto-deleted regardless of TTL.
+    # When true, final_ images (the Stage 2 Ghibli+QR composite — the actual
+    # client deliverable) are never auto-deleted regardless of TTL. Defaults to
+    # true: these are the one artifact this service must never silently lose;
+    # intermediate stage1_/qrlock_ files keep their own short TTLs above.
     # Use explicit boolean — never encode "never delete" as a magic TTL value.
-    PERSIST_FINAL_IMAGES: bool = os.getenv("PERSIST_FINAL_IMAGES", "false").lower() in {"1", "true", "yes"}
+    PERSIST_FINAL_IMAGES: bool = os.getenv("PERSIST_FINAL_IMAGES", "true").lower() in {"1", "true", "yes"}
     PROMPT_PIC_TO_GHIBLI = (
         "Studio Ghibli hand-painted illustration of this exact person, based strictly on "
         "what is visibly present in the source photo — do not infer, guess, or add anything not seen. "

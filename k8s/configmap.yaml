@@ -16,7 +16,7 @@ data:
   STAGE1_TTL_HOURS: "2"
   QRLOCK_TTL_HOURS: "2"
   FINAL_IMAGE_TTL_HOURS: "24"
-  PERSIST_FINAL_IMAGES: "false"
+  PERSIST_FINAL_IMAGES: "true"
   # DOMAIN must be the externally reachable address for this Service/Ingress —
   # set per environment (dev/staging/prod), not baked in here.
   DOMAIN: "<set-per-environment>"
