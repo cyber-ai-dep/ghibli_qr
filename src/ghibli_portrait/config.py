@@ -65,14 +65,6 @@ class Settings:
     # Validation Settings
     # If enabled, requests without a detectable face are rejected before generation.
     REQUIRE_HUMAN_FACE = os.getenv("REQUIRE_HUMAN_FACE", "true").lower() in {"1", "true", "yes"}
-    # Reject if more than this number of faces are detected (set to 0 to disable the limit).
-    MAX_FACES = int(os.getenv("MAX_FACES", "1"))
-    # Minimum face area ratio (face_bbox_area / image_area). Helps reject tiny/far faces.
-    MIN_FACE_AREA_RATIO = float(os.getenv("MIN_FACE_AREA_RATIO", "0.03"))
-    # Max concurrent MediaPipe face-detection operations. MediaPipe is no longer
-    # called from the request path (see CLIP_CONCURRENCY_LIMIT below) — kept
-    # defined, unreferenced, alongside the MediaPipe code it used to size.
-    MAX_MEDIAPIPE_CONCURRENCY = int(os.getenv("MAX_MEDIAPIPE_CONCURRENCY", "15"))
 
     # Max concurrent CLIP classification operations (Stage 1 human-portrait gate).
     # CLIP inference is pinned to 1 torch thread per call (see
