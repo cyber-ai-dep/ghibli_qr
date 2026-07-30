@@ -17,7 +17,7 @@ from PIL import Image
 
 from src.ghibli_portrait.services.validation_service import _detect_faces
 
-_logger = logging.getLogger("identity_check")
+_logger = logging.getLogger(__name__)
 
 
 @dataclass

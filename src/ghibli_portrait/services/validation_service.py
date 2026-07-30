@@ -79,7 +79,7 @@ _MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaz
 _MODEL_CACHE_DIR = Path(__file__).parent.parent / "models"
 _MODEL_PATH = _MODEL_CACHE_DIR / "blaze_face_short_range.tflite"
 
-_validation_logger = logging.getLogger("validation_internal")
+_validation_logger = logging.getLogger(__name__)
 
 # Regex patterns for URL validation
 _LOCALHOST_RE = re.compile(
@@ -508,7 +508,10 @@ def extract_skin_color_hex(img: Image.Image) -> Optional[str]:
 
         return f"#{r:02X}{g:02X}{b:02X}"
 
-    except Exception:
+    except Exception as exc:
+        # Without this the response silently carries skinColor: null and the
+        # skin-tone prompt injection is skipped, with no trace of why.
+        _validation_logger.warning("Skin color extraction failed — %s", exc)
         return None
 
 
@@ -573,6 +576,9 @@ async def validate_real_human_image_async(
         else:
             img = await _download()
     except Exception as e:
+        _validation_logger.warning(
+            "Image download failed — code=IMAGE_DOWNLOAD_FAILED url=%s err=%s", image_url, e
+        )
         return ValidationResultV1(
             ok=False,
             code="IMAGE_DOWNLOAD_FAILED",

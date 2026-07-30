@@ -62,7 +62,7 @@ from typing import Dict, List, Optional
 
 from PIL import Image
 
-_logger = logging.getLogger("clip_validation_service")
+_logger = logging.getLogger(__name__)
 
 # Where CLIP weights are cached/loaded from. Set explicitly in the Docker image
 # (see Dockerfile) to match where weights are baked in at build time, so no
@@ -232,6 +232,23 @@ def _load_clip() -> None:
             _MODEL_NAME, _PRETRAINED, len(_LABELS),
             sum(len(v) for v in _PROMPT_TEMPLATES.values()),
         )
+
+
+def model_status() -> Dict[str, object]:
+    """Load state of this module's singletons, for the diagnostics snapshot.
+
+    Pure stdlib and pure read — imports nothing from the app, honouring this
+    module's self-contained contract described in the docstring above.
+    """
+    return {
+        "clipLoaded": _clip_model is not None,
+        "clipTextFeaturesReady": _text_features is not None,
+        "clipModelName": _MODEL_NAME,
+        "clipPretrained": _PRETRAINED,
+        "clipCacheDir": _CLIP_CACHE_DIR,
+        "clipLabelCount": len(_LABELS),
+        "clipPromptCount": sum(len(v) for v in _PROMPT_TEMPLATES.values()),
+    }
 
 
 def preload() -> None:

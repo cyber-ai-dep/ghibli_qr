@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import List, Optional
 
 import httpx
@@ -99,14 +100,31 @@ async def seedream_generate(
         "Authorization": f"Bearer {ARK_API_KEY}",
     }
 
+    # NEVER log `headers` — it carries the ARK API key. Log only request shape.
+    _log.debug(
+        "[ARK] POST %s — model=%s size=%s imageRefs=%d promptChars=%d",
+        ARK_API_URL, body["model"], size, len(images or []), len(full_prompt),
+    )
+    _t0 = time.monotonic()
     async with httpx.AsyncClient(timeout=300) as client:
         resp = await client.post(ARK_API_URL, json=body, headers=headers)
+    _elapsed = time.monotonic() - _t0
 
     try:
         data = resp.json()
     except Exception:
+        # Could be an HTML error page or a very large body — record the size, not the content.
+        _log.warning(
+            "[ARK] non-JSON response body — status=%s bytes=%d", resp.status_code, len(resp.content)
+        )
         data = {"raw": resp.text}
 
     if resp.status_code != 200:
+        _log.error(
+            "[ARK] request failed — status=%s elapsed=%.2fs detail=%s",
+            resp.status_code, _elapsed, str(data)[:500],
+        )
         raise RuntimeError(f"BytePlus API error {resp.status_code}: {data}")
+
+    _log.info("[ARK] request ok — status=%s elapsed=%.2fs", resp.status_code, _elapsed)
     return data

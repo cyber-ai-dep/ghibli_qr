@@ -148,3 +148,136 @@ PYTHONPATH= uv run --group test pytest -q
 For debugging *pipeline logic* issues (not setup issues) — e.g. why a specific
 request failed validation or QR checking — see
 [SYSTEM_ARCHITECTURE.md §7.3 "How to debug issues"](SYSTEM_ARCHITECTURE.md#73-how-to-debug-issues).
+
+---
+
+## 9. Reading logs and diagnostics from a live deployment
+
+### Request correlation
+
+Every response carries an `X-Request-ID` header, and every log line that request
+produced is tagged with the same id — including the deeper `[GEN]`, `[ARK]`, and
+CLIP lines, which otherwise cannot be told apart when several generations run
+concurrently.
+
+```bash
+curl -i -X POST "$DOMAIN/v1/ghibli-qr" \
+  -H 'Content-Type: application/json' \
+  -H 'X-Request-ID: probe-001' \
+  -d '{"imgUrl":"https://…/photo.jpg","url":"https://example.com"}'
+```
+
+Supply your own id to correlate with an upstream caller's trace, or omit it and
+read the generated one off the response. Values are accepted only if they match
+`^[A-Za-z0-9._:-]{1,64}$` — anything else is replaced with a fresh id, because a
+newline in that header would let a caller forge log lines.
+
+```bash
+docker compose logs ghibli-api | grep 'probe-001'
+kubectl logs deploy/ghibli-api | grep 'probe-001'
+```
+
+### The diagnostics API
+
+`/v1/diagnostics` is **internal operational tooling** — for developers, DevOps,
+SREs and operators. It is not part of the public API contract.
+
+The endpoints are **always registered and always visible in Swagger** (`/docs`), so
+they are discoverable without a config change or restart. **Access is controlled
+entirely by `DIAGNOSTICS_TOKEN`.** If that variable is unset, every request is
+rejected with `401` — an absent secret denies access, it never grants it.
+
+```bash
+# .env  (or the k8s Secret)
+DIAGNOSTICS_TOKEN=$(openssl rand -hex 32)
+```
+
+Authenticate with either header; `X-Diagnostics-Token` is preferred because it
+cannot collide with the platform gateway's `Authorization` header:
+
+```bash
+TOKEN=<the value above>
+H="X-Diagnostics-Token: $TOKEN"          # preferred
+# H="Authorization: Bearer $TOKEN"       # also accepted
+```
+
+#### The one call that matters
+
+```bash
+curl -s -H "$H" "$DOMAIN/v1/diagnostics" | jq
+```
+
+That single response is the operational dashboard for this service:
+
+| Section | What it answers |
+|---|---|
+| `service` | Which build is this? version, `gitCommit`, `environment`, hostname, pid, uptime |
+| `health` | One rolled-up verdict: `healthy` / `degraded` / `unhealthy`, plus which check failed |
+| `requests` | Total, active, and peak requests; counts by status class and endpoint; error rate; average duration |
+| `concurrency` | Saturation of the CLIP / download / generation semaphores (`inUse`, `waiting`) |
+| `pendingTasks` | In-flight generations and the age of the oldest |
+| `models` | Did CLIP and QReader actually load in this process? |
+| `memory` | Current and peak RSS — check against the container limit |
+| `storage` | tmp file counts by prefix, bytes used, free disk |
+| `config` | Effective configuration (secrets as presence + fingerprint only) |
+| `recentLogs` | The latest entries inline, so one call usually explains an incident |
+
+Narrow the embedded logs with `?logLimit=50&logLevel=WARNING`, or omit them with
+`?logLimit=0`.
+
+#### Focused queries
+
+```bash
+# Everything that went wrong recently
+curl -s -H "$H" "$DOMAIN/v1/diagnostics/logs?level=WARNING&limit=50" | jq '.data.entries'
+
+# The full trace of one request
+curl -s -H "$H" "$DOMAIN/v1/diagnostics/logs?requestId=probe-001&order=asc" | jq '.data.entries'
+
+# Aggregates: counts by level and logger, plus the last 10 errors
+curl -s -H "$H" "$DOMAIN/v1/diagnostics/logs/stats" | jq
+
+# Tail incrementally — feed the previous newestSeq back as sinceSeq
+curl -s -H "$H" "$DOMAIN/v1/diagnostics/logs?sinceSeq=1840" | jq '.data.entries'
+
+# Administrative: clear the buffer (stdout is unaffected)
+curl -s -X DELETE -H "$H" "$DOMAIN/v1/diagnostics/logs" | jq
+```
+
+| Filter (on `/logs`) | Meaning |
+|---|---|
+| `level` | Minimum level, e.g. `WARNING` |
+| `logger` | Case-insensitive substring of the logger name |
+| `requestId` | Exact match — the whole trace of one request |
+| `contains` | Case-insensitive substring of the message |
+| `sinceSeconds` | Relative time window |
+| `sinceSeq` | Only entries newer than this sequence number (tail polling) |
+| `order` | `desc` (default, newest first) or `asc` |
+| `limit` | 1–1000, default 100 |
+
+### Operational caveats — read before relying on this
+
+- **`401` on every call** means `DIAGNOSTICS_TOKEN` is unset or does not match.
+  Check the startup log: it states explicitly whether a token was configured.
+- **The buffer is in-memory and per-process.** It vanishes on restart or OOM-kill,
+  which is precisely when you most want it. **stdout remains the system of record**;
+  this API is a convenience, not durable log storage.
+- **Secrets are redacted in the buffer, not in stdout.** `ARK_API_KEY`, bearer
+  tokens, and URL query strings (signed-CDN credentials) are scrubbed before an
+  entry is stored, and the snapshot reports only `arkApiKeyConfigured` plus a
+  non-invertible fingerprint. Container logs keep full fidelity, because access to
+  them is already controlled by the platform.
+- **`gitCommit` is `null` unless the image was built with it.** `.dockerignore`
+  excludes `.git/`, so pass it at build time:
+  `docker build --build-arg GIT_COMMIT=$(git rev-parse --short=12 HEAD) .`
+- **`DELETE /v1/diagnostics/logs` destroys evidence.** It is token-gated and its
+  use is itself logged to stdout.
+- **The buffer only holds what `LOG_LEVEL` lets through.** Debugging a specific
+  request usually means setting `LOG_LEVEL=DEBUG` and restarting.
+- **The endpoints are documented in public Swagger.** That is deliberate — they are
+  discoverable but not accessible. Because they are advertised, treat the token as
+  a real credential: rotate it, keep it in your secret manager, and consider an
+  ingress source-range allowlist (`nginx.ingress.kubernetes.io/whitelist-source-range`)
+  on `/v1/diagnostics` as defence in depth.
+- With more than one replica, a request through the ingress reaches whichever pod
+  the load balancer picked. Use `kubectl port-forward` to target a specific pod.

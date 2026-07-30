@@ -37,6 +37,7 @@ from src.ghibli_portrait.api.responses import (
     internal_error_response,
 )
 from src.ghibli_portrait.config import Settings
+from src.ghibli_portrait.diagnostics.runtime import TrackedSemaphore
 from src.ghibli_portrait.models.schemas import (
     CallbackRequest,
     GhibliQRRequest,
@@ -90,17 +91,17 @@ s = Settings()
 # CLIP inference is pinned to 1 torch thread per call, so this semaphore's size IS
 # the real parallelism — oversized values oversubscribe the host's cores under a burst.
 # Tune via CLIP_CONCURRENCY_LIMIT env var (default 4; start near vCPU count with margin).
-_clip_sem = asyncio.Semaphore(int(s.CLIP_CONCURRENCY_LIMIT))
+_clip_sem = TrackedSemaphore(int(s.CLIP_CONCURRENCY_LIMIT), name="clip")
 
 # Limits concurrent Layer-2 image downloads. I/O-bound (not CPU), so this is an
 # internal safety cap against an accidental burst rather than a CPU concern.
 # Tune via DOWNLOAD_CONCURRENCY_LIMIT env var (default 24).
-_download_sem = asyncio.Semaphore(int(s.DOWNLOAD_CONCURRENCY_LIMIT))
+_download_sem = TrackedSemaphore(int(s.DOWNLOAD_CONCURRENCY_LIMIT), name="download")
 
 # Limits concurrent image-generation submissions to the provider (BytePlus ARK) to
 # prevent rate-limit errors under burst load. All stages (Stage 1, Stage 2, identity
 # retry) share this one semaphore. Tune via GENERATION_CONCURRENCY_LIMIT env var (default 24).
-_gen_sem = asyncio.Semaphore(s.GENERATION_CONCURRENCY_LIMIT)
+_gen_sem = TrackedSemaphore(s.GENERATION_CONCURRENCY_LIMIT, name="generation")
 
 # Substrings in the provider's error message that indicate a rate-limit response.
 _RATE_LIMIT_SIGNALS = frozenset({"call frequency", "too high", "rate limit", "rate_limit"})
@@ -251,9 +252,15 @@ async def get_short_url(url: str):
 )
 async def transform2ghibli(request: Image2GhibliRequest):
     """Transform portrait to Ghibli style with comprehensive validation."""
+    _t0 = _time.monotonic()
+    _log.info("Ghibli start — imgCount=%d", len(request.img_urls or []))
     try:
         v = validate_single_image_url_list(request.img_urls)
         if not v.ok:
+            _log.warning(
+                "Ghibli rejected — code=SINGLE_IMAGE_REQUIRED field=imgUrls count=%d reason=%s",
+                len(request.img_urls or []), v.reason,
+            )
             return JSONResponse(
                 status_code=422,
                 content=validation_error_response(
@@ -268,6 +275,11 @@ async def transform2ghibli(request: Image2GhibliRequest):
         # download_sem caps concurrent downloads, clip_sem caps concurrent CLIP inference
         validation_result, source_img = await validate_real_human_image_async(request.img_urls[0], settings=s, clip_sem=_clip_sem, download_sem=_download_sem)
         if not validation_result.ok:
+            _log.warning(
+                "Ghibli rejected — code=%s stage=%s type=%s message=%s",
+                validation_result.code, validation_result.stage,
+                validation_result.error_type, validation_result.message,
+            )
             return JSONResponse(
                 status_code=422,
                 content=validation_error_response(
@@ -289,6 +301,10 @@ async def transform2ghibli(request: Image2GhibliRequest):
         res = await _submit_generation(**request.model_dump(), model=s.GHIBLI_MODEL)
 
         if res["code"] != 200:
+            _log.error(
+                "Ghibli failed — code=GENERATION_API_ERROR providerCode=%s msg=%s",
+                res.get("code"), res.get("msg", "External API returned an error"),
+            )
             return JSONResponse(
                 status_code=500,
                 content=external_error_response(
@@ -301,12 +317,19 @@ async def transform2ghibli(request: Image2GhibliRequest):
 
         task_id = res["data"]["taskId"]
         future = asyncio.get_running_loop().create_future()
+        future._created_at = _time.monotonic()
         pending_tasks[task_id] = future
 
+        _t_wait = _time.monotonic()
         try:
             webhook_result: CallbackRequest = await asyncio.wait_for(future, timeout=300)
 
             if webhook_result.is_failure:
+                _log.error(
+                    "Ghibli failed — code=GENERATION_TASK_FAILED taskId=%s state=%s failMsg=%s",
+                    task_id, webhook_result.data.state,
+                    webhook_result.data.failMsg or webhook_result.msg,
+                )
                 return JSONResponse(
                     status_code=500,
                     content=external_error_response(
@@ -320,9 +343,17 @@ async def transform2ghibli(request: Image2GhibliRequest):
             try:
                 _param_raw = json.loads(webhook_result.data.param)
                 params = json.loads(_param_raw["input"]) if "input" in _param_raw else _param_raw
-            except Exception:
+            except Exception as _param_err:
+                # Expected for ARK-built callbacks, where `param` is empty — the
+                # response falls back to the documented quality/aspectRatio defaults.
+                _log.debug("Webhook param JSON unparseable, defaulting to {} — %s", _param_err)
                 params = {}
             result_urls = webhook_result.data.get_result_urls() or []
+            _log.info(
+                "Ghibli done in %.1fs — taskId=%s urls=%d costTime=%ss",
+                _time.monotonic() - _t0, task_id, len(result_urls),
+                webhook_result.data.costTime,
+            )
 
             return JSONResponse(
                 content=success_response(
@@ -340,6 +371,10 @@ async def transform2ghibli(request: Image2GhibliRequest):
 
         except asyncio.TimeoutError:
             pending_tasks.pop(task_id, None)
+            _log.warning(
+                "Ghibli timeout — code=WEBHOOK_TIMEOUT taskId=%s waited=%.0fs",
+                task_id, _time.monotonic() - _t_wait,
+            )
             return JSONResponse(
                 status_code=504,
                 content=external_error_response(
@@ -355,6 +390,7 @@ async def transform2ghibli(request: Image2GhibliRequest):
             raise
         except Exception as e:
             pending_tasks.pop(task_id, None)
+            _log.exception("Ghibli internal error while awaiting task %s", task_id)
             return JSONResponse(
                 status_code=500,
                 content=internal_error_response(
@@ -366,6 +402,7 @@ async def transform2ghibli(request: Image2GhibliRequest):
     except asyncio.CancelledError:
         raise
     except Exception as e:
+        _log.exception("Ghibli unhandled error")
         return JSONResponse(
             status_code=500,
             content=internal_error_response(
@@ -410,6 +447,7 @@ async def get_qr_lock(req: QRLockRequest):
         if short_url_data:
             response_data["shortUrl"] = {"url": short_url_data.url, "code": short_url_data.code}
 
+        _log.info("QR lock generated — file=%s shortened=%s", filename, req.shorten_url is True)
         return JSONResponse(
             content=success_response(
                 message="QR code with lock screen generated successfully",
@@ -417,7 +455,15 @@ async def get_qr_lock(req: QRLockRequest):
             ).model_dump(by_alias=True)
         )
 
+    except asyncio.CancelledError:
+        # Matches transform2ghibli/automated_pipeline: a cancelled request means the
+        # client is already gone, so propagate rather than building a 500 body for it.
+        raise
     except Exception as e:
+        _log.exception(
+            "QR lock generation failed — shortenUrl=%s versionRequested=%s",
+            req.shorten_url, req.version,
+        )
         return JSONResponse(
             status_code=500,
             content=internal_error_response(
@@ -447,6 +493,7 @@ async def delete_qr_lock(img_id: str):
     imgpath = s.TMP_PATH / f"{img_id}.png"
 
     if not imgpath.exists():
+        _log.warning("QR lock delete rejected — code=IMAGE_NOT_FOUND imgId=%s", img_id)
         return JSONResponse(
             status_code=404,
             content=error_response(
@@ -461,7 +508,15 @@ async def delete_qr_lock(img_id: str):
             ).model_dump(by_alias=True)
         )
 
-    imgpath.unlink()
+    try:
+        imgpath.unlink()
+    except Exception:
+        # Re-raise so the global handler still produces the exact same 500 body it
+        # does today — this only adds the log line that was missing.
+        _log.exception("QR lock delete failed — imgId=%s path=%s", img_id, imgpath)
+        raise
+
+    _log.info("QR lock deleted — imgId=%s", img_id)
     return JSONResponse(
         content=success_response(
             message="Image deleted successfully",
@@ -495,9 +550,12 @@ async def automated_pipeline(request: GhibliQRRequest):
     Layer 4 (Orchestration): Coordinates validation and generation stages.
     Both stages generate via BytePlus ARK (Seedream); the response reports ARK_MODEL.
     """
-    _req_id = uuid4().hex[:8]
+    # The request id is bound to the context by RequestContextMiddleware and
+    # rendered into every log line by RequestIdFilter, so the pipeline logs, the
+    # X-Request-ID response header, and the deeper service-layer logs (ARK / CLIP)
+    # all carry the same value with no plumbing through call signatures.
     _t0 = _time.monotonic()
-    _log.info("[%s] Pipeline start — img=%s qr_url=%s", _req_id, request.img_url.split("/")[-1], request.url[:40])
+    _log.info("Pipeline start — img=%s qr_url=%s", request.img_url.split("/")[-1], request.url[:40])
     try:
         # ---------------------------------------------------------------------
         # Layers 1,2,3A: validate (async download + CLIP classification in thread)
@@ -506,8 +564,13 @@ async def automated_pipeline(request: GhibliQRRequest):
         # ---------------------------------------------------------------------
         _t_val = _time.monotonic()
         validation_result, source_img = await validate_real_human_image_async(request.img_url, settings=s, clip_sem=_clip_sem, download_sem=_download_sem)
-        _log.info("[%s] Validation done in %.1fs — ok=%s code=%s", _req_id, _time.monotonic() - _t_val, validation_result.ok, getattr(validation_result, "code", None))
+        _log.info("Validation done in %.1fs — ok=%s code=%s", _time.monotonic() - _t_val, validation_result.ok, getattr(validation_result, "code", None))
         if not validation_result.ok:
+            _log.warning(
+                "Pipeline rejected — code=%s stage=%s type=%s message=%s",
+                validation_result.code, validation_result.stage,
+                validation_result.error_type, validation_result.message,
+            )
             return JSONResponse(
                 status_code=422,
                 content=validation_error_response(
@@ -533,21 +596,25 @@ async def automated_pipeline(request: GhibliQRRequest):
                 "You MUST reproduce this exact color in the illustration. "
                 "Do NOT lighten, darken, whiten, or shift this color in any direction."
             )
-            _log.info("[%s] Stage 1 skin tone injected into prompt: %s", _req_id, skin_color_hex)
+            _log.info("Stage 1 skin tone injected into prompt: %s", skin_color_hex)
 
         # =====================================================================
         # STAGE 1: Submit Ghibli generation (native async HTTP)
         # =====================================================================
         _t_s1_submit = _time.monotonic()
-        _log.info("[%s] Stage 1 attempt 1/1 — model=%s", _req_id, s.GHIBLI_MODEL)
+        _log.info("Stage 1 attempt 1/1 — model=%s", s.GHIBLI_MODEL)
         res = await _submit_generation(
             [request.img_url],
             _stage1_prompt,
             model=s.GHIBLI_MODEL,
             negative_prompt=s.NEGATIVE_PROMPT_PIC_TO_GHIBLI,
         )
-        _log.info("[%s] Stage 1 attempt 1 submit done in %.2fs — code=%s", _req_id, _time.monotonic() - _t_s1_submit, res.get("code"))
+        _log.info("Stage 1 attempt 1 submit done in %.2fs — code=%s", _time.monotonic() - _t_s1_submit, res.get("code"))
         if res["code"] != 200:
+            _log.error(
+                "Pipeline failed — code=STAGE1_API_ERROR providerCode=%s msg=%s",
+                res.get("code"), res.get("msg", "External API error"),
+            )
             return JSONResponse(
                 status_code=500,
                 content=external_error_response(
@@ -560,6 +627,7 @@ async def automated_pipeline(request: GhibliQRRequest):
 
         task_id_1 = res["data"]["taskId"]
         future_1 = asyncio.get_running_loop().create_future()
+        future_1._created_at = _time.monotonic()
         pending_tasks[task_id_1] = future_1
 
         # Generate QR lock image while Stage 1 runs.
@@ -573,18 +641,20 @@ async def automated_pipeline(request: GhibliQRRequest):
                 img.thumbnail((1024, 1024), _PILImage.LANCZOS)
             filename = f"qrlock_{uuid4()}.jpg"
             img.save(s.TMP_PATH / filename, format="JPEG", quality=92, optimize=True)
-            return s.DOMAIN + "/tmp/" + filename
+            # Return the measured size alongside the URL — the log line below used to
+            # report a hardcoded literal that did not track the actual thumbnail.
+            return s.DOMAIN + "/tmp/" + filename, max(img.size)
 
-        qr_lock_url_path = await asyncio.to_thread(_gen_qr_lock)
-        _log.info("[%s] QR lock generated in %.2fs — saved as qrlock_*.jpg size=%dpx", _req_id, _time.monotonic() - _t_qr, 645)
+        qr_lock_url_path, _qr_lock_px = await asyncio.to_thread(_gen_qr_lock)
+        _log.info("QR lock generated in %.2fs — saved as qrlock_*.jpg size=%dpx", _time.monotonic() - _t_qr, _qr_lock_px)
 
         _t_s1_wait = _time.monotonic()
         try:
             webhook_result_1: CallbackRequest = await asyncio.wait_for(future_1, timeout=600)
-            _log.info("[%s] Stage 1 webhook received in %.1fs — taskId=%s", _req_id, _time.monotonic() - _t_s1_wait, task_id_1)
+            _log.info("Stage 1 webhook received in %.1fs — taskId=%s", _time.monotonic() - _t_s1_wait, task_id_1)
         except asyncio.TimeoutError:
             pending_tasks.pop(task_id_1, None)
-            _log.warning("[%s] Stage 1 TIMEOUT after %.0fs — taskId=%s", _req_id, _time.monotonic() - _t_s1_wait, task_id_1)
+            _log.warning("Stage 1 TIMEOUT after %.0fs — taskId=%s", _time.monotonic() - _t_s1_wait, task_id_1)
             return JSONResponse(
                 status_code=504,
                 content=external_error_response(
@@ -598,6 +668,11 @@ async def automated_pipeline(request: GhibliQRRequest):
             pending_tasks.pop(task_id_1, None)
 
         if webhook_result_1.is_failure:
+            _log.error(
+                "Pipeline failed — code=STAGE1_TASK_FAILED taskId=%s state=%s failMsg=%s",
+                task_id_1, webhook_result_1.data.state,
+                webhook_result_1.data.failMsg or webhook_result_1.msg,
+            )
             return JSONResponse(
                 status_code=500,
                 content=external_error_response(
@@ -614,6 +689,10 @@ async def automated_pipeline(request: GhibliQRRequest):
 
         stage2_validation = validate_stage2_input(ghibli_url)
         if not stage2_validation.ok:
+            _log.error(
+                "Pipeline failed — code=INVALID_STAGE1_OUTPUT resultUrlCount=%d message=%s",
+                len(_s1_urls), stage2_validation.message,
+            )
             return JSONResponse(
                 status_code=500,
                 content=internal_error_response(
@@ -643,6 +722,7 @@ async def automated_pipeline(request: GhibliQRRequest):
 
             ghibli_img, ghibli_local_url = await asyncio.to_thread(_save_stage1)
         except Exception as e:
+            _log.exception("Stage 1 re-host failed — url=%s", ghibli_url)
             return JSONResponse(
                 status_code=500,
                 content=internal_error_response(
@@ -671,12 +751,16 @@ async def automated_pipeline(request: GhibliQRRequest):
 
         for attempt in range(1, 4):
             _t_s2_submit = _time.monotonic()
-            _log.info("[%s] Stage 2 attempt %d/3 — model=%s", _req_id, attempt, s.COMPOSE_MODEL)
+            _log.info("Stage 2 attempt %d/3 — model=%s", attempt, s.COMPOSE_MODEL)
             res2 = await _submit_generation(
                 [ghibli_local_url, qr_lock_url_path], _stage2_prompt, model=s.COMPOSE_MODEL
             )
-            _log.info("[%s] Stage 2 attempt %d submit done in %.2fs — code=%s", _req_id, attempt, _time.monotonic() - _t_s2_submit, res2.get("code"))
+            _log.info("Stage 2 attempt %d submit done in %.2fs — code=%s", attempt, _time.monotonic() - _t_s2_submit, res2.get("code"))
             if res2.get("code") != 200:
+                _log.error(
+                    "Pipeline failed — code=STAGE2_API_ERROR attempt=%d providerCode=%s msg=%s",
+                    attempt, res2.get("code"), res2.get("msg", "External API error"),
+                )
                 return JSONResponse(
                     status_code=500,
                     content=external_error_response(
@@ -689,25 +773,26 @@ async def automated_pipeline(request: GhibliQRRequest):
 
             task_id_2 = res2["data"]["taskId"]
             future_2 = asyncio.get_running_loop().create_future()
+            future_2._created_at = _time.monotonic()
             pending_tasks[task_id_2] = future_2
 
             _t_s2_wait = _time.monotonic()
             try:
                 webhook_result_2: CallbackRequest = await asyncio.wait_for(future_2, timeout=600)
-                _log.info("[%s] Stage 2 attempt %d webhook received in %.1fs — taskId=%s costTime=%s", _req_id, attempt, _time.monotonic() - _t_s2_wait, task_id_2, getattr(webhook_result_2.data, "costTime", "?"))
+                _log.info("Stage 2 attempt %d webhook received in %.1fs — taskId=%s costTime=%s", attempt, _time.monotonic() - _t_s2_wait, task_id_2, getattr(webhook_result_2.data, "costTime", "?"))
             except asyncio.TimeoutError:
                 pending_tasks.pop(task_id_2, None)
                 _log.warning(
-                    "[%s] Stage 2 attempt %d/3 timed out after %.0fs — taskId=%s",
-                    _req_id, attempt, _time.monotonic() - _t_s2_wait, task_id_2,
+                    "Stage 2 attempt %d/3 timed out after %.0fs — taskId=%s",
+                    attempt, _time.monotonic() - _t_s2_wait, task_id_2,
                 )
                 if attempt < 3:
                     _log.warning(
-                        "[%s] Stage 2 retrying with fresh task (attempt %d/3 exhausted)",
-                        _req_id, attempt,
+                        "Stage 2 retrying with fresh task (attempt %d/3 exhausted)",
+                        attempt,
                     )
                     continue
-                _log.error("[%s] Stage 2 retry budget exhausted — all 3 attempts timed out", _req_id)
+                _log.error("Stage 2 retry budget exhausted — all 3 attempts timed out")
                 return JSONResponse(
                     status_code=504,
                     content=external_error_response(
@@ -721,6 +806,11 @@ async def automated_pipeline(request: GhibliQRRequest):
                 pending_tasks.pop(task_id_2, None)
 
             if webhook_result_2.is_failure:
+                _log.error(
+                    "Pipeline failed — code=STAGE2_TASK_FAILED attempt=%d taskId=%s state=%s failMsg=%s",
+                    attempt, task_id_2, webhook_result_2.data.state,
+                    webhook_result_2.data.failMsg or webhook_result_2.msg,
+                )
                 return JSONResponse(
                     status_code=500,
                     content=external_error_response(
@@ -735,6 +825,10 @@ async def automated_pipeline(request: GhibliQRRequest):
             final_image_url = result_urls[0] if result_urls else None
 
             if not final_image_url:
+                _log.warning(
+                    "Stage 2 attempt %d returned no result url — retrying (taskId=%s)",
+                    attempt, task_id_2,
+                )
                 last_result_urls = result_urls
                 last_webhook_result_2 = webhook_result_2
                 last_qr_validation = QRValidationResult(
@@ -778,8 +872,8 @@ async def automated_pipeline(request: GhibliQRRequest):
             stage2_cost += webhook_result_2.data.costTime
 
             _log.info(
-                "[%s] Stage 2 attempt %d QR validation — ok=%s detected=%s reason=%s",
-                _req_id, attempt, qr_validation.ok,
+                "Stage 2 attempt %d QR validation — ok=%s detected=%s reason=%s",
+                attempt, qr_validation.ok,
                 repr(qr_validation.detected_payload), qr_validation.reason,
             )
 
@@ -790,18 +884,18 @@ async def automated_pipeline(request: GhibliQRRequest):
                 qr_validation.detected_payload is None
                 and qr_validation.reason == "no valid qr payload detected in merged image"
             ):
-                _log.info("[%s] QR not detected — retrying (attempt %d/3)", _req_id, attempt)
+                _log.info("QR not detected — retrying (attempt %d/3)", attempt)
                 continue
 
             # Payload mismatch or any other reason — do not retry
-            _log.warning("[%s] QR mismatch — not retrying (attempt %d/3): %s", _req_id, attempt, qr_validation.reason)
+            _log.warning("QR mismatch — not retrying (attempt %d/3): %s", attempt, qr_validation.reason)
             break
 
         _total = _time.monotonic() - _t0
         _qr_ok = last_qr_validation.ok if last_qr_validation else False
         _log.info(
-            "[%s] Pipeline DONE in %.1fs — qr_ok=%s s1_cost=%ss s2_cost=%ss pending_tasks=%d",
-            _req_id, _total, _qr_ok, stage1_cost, stage2_cost, len(pending_tasks),
+            "Pipeline DONE in %.1fs — qr_ok=%s s1_cost=%ss s2_cost=%ss pending_tasks=%d",
+            _total, _qr_ok, stage1_cost, stage2_cost, len(pending_tasks),
         )
         return JSONResponse(
             content=success_response(
@@ -831,7 +925,7 @@ async def automated_pipeline(request: GhibliQRRequest):
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        _log.exception("[pipeline] Unhandled exception in automated_pipeline: %s", e)
+        _log.exception("Unhandled exception in automated_pipeline: %s", e)
         return JSONResponse(
             status_code=500,
             content=internal_error_response(

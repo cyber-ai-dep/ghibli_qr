@@ -76,6 +76,13 @@ ENV PATH="/opt/venv/bin:$PATH" \
     MKL_NUM_THREADS=1 \
     CLIP_CACHE_DIR=/app/.cache/clip
 
+# Build identity surfaced by GET /v1/diagnostics. .dockerignore excludes .git/ from
+# the build context, so this ARG is the only way the running container can know
+# which commit it is. Pass it in CI:
+#   docker build --build-arg GIT_COMMIT=$(git rev-parse --short=12 HEAD) .
+ARG GIT_COMMIT=""
+ENV GIT_COMMIT=${GIT_COMMIT}
+
 # Copy entire application code from host to container
 COPY . .
 

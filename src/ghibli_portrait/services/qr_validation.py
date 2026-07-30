@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Optional
@@ -13,6 +14,8 @@ import httpx
 import numpy as np
 from PIL import Image, ImageChops
 from qreader import QReader
+
+_log = logging.getLogger(__name__)
 
 
 # ---------- CONFIG ----------
@@ -57,8 +60,10 @@ def _pyzbar_decode(img_np: np.ndarray) -> Optional[str]:
         results = pyzbar_decode(img_np, symbols=[ZBarSymbol.QRCODE])
         if results:
             return results[0].data.decode("utf-8")
-    except Exception:
-        pass
+    except Exception as exc:
+        # Also covers a missing libzbar0 in the runtime image, which silently
+        # forces every QR check onto the ~1-2s YOLO path.
+        _log.debug("pyzbar decode unavailable or failed, falling back to QReader — %s", exc)
     return None
 
 
@@ -67,7 +72,9 @@ def _qreader_decode(img_np: np.ndarray) -> Optional[str]:
     try:
         raw = _qreader.detect_and_decode(image=img_np, return_detections=True)
         return _extract_qr_payload(raw)
-    except Exception:
+    except Exception as exc:
+        # Only reached after pyzbar already failed, so this is the last decoder.
+        _log.warning("QReader decode failed — %s", exc)
         return None
 
 

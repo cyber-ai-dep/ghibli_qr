@@ -103,6 +103,22 @@ class Settings:
     # false positives consistently. Re-enable with a strong identity-preserving model.
     ENABLE_IDENTITY_CHECK = os.getenv("ENABLE_IDENTITY_CHECK", "false").lower() in {"1", "true", "yes"}
 
+    # ------------------------------------------------------------------
+    # Diagnostics API (/v1/diagnostics) — internal operational use only.
+    #
+    # The routes are ALWAYS registered and always visible in Swagger, so operators
+    # can discover them without a config change or restart. Discoverability is not
+    # access: every request is authenticated against DIAGNOSTICS_TOKEN.
+    #
+    # An unset token denies every request (401). It never means "open access" —
+    # a missing secret must fail closed, not open.
+    # ------------------------------------------------------------------
+    DIAGNOSTICS_TOKEN = os.getenv("DIAGNOSTICS_TOKEN", "")
+    # Recommended minimum length. Below this the service still starts and still
+    # enforces the token, but logs a warning at startup — refusing to run would
+    # take down image generation over a diagnostics-only misconfiguration.
+    DIAGNOSTICS_MIN_TOKEN_LENGTH = 16
+
     # TTL for files in static/tmp/ — differentiated by filename prefix.
     # stage1_* and qrlock_* are intermediate assets; final_* are client deliverables.
     # All values must be positive integers (hours). Invalid values fall back to the default.

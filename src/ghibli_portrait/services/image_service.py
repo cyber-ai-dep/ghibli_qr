@@ -200,7 +200,8 @@ async def generate_img(
 
         url = _first_url(ark_result)
         if not url:
-            _log.error("[ARK] no image URL in response: %s", ark_result)
+            # Truncated: an ARK error payload can echo back the full base64 request.
+            _log.error("[ARK] no image URL in response: %s", str(ark_result)[:500])
             return {"code": 501, "msg": f"ARK returned no image URL: {ark_result}"}
 
         task_id = uuid4().hex

@@ -19,6 +19,13 @@ data:
   QRLOCK_TTL_HOURS: "2"
   FINAL_IMAGE_TTL_HOURS: "24"
   PERSIST_FINAL_IMAGES: "false"
+  # Diagnostics API (/v1/diagnostics) — always registered; access is controlled
+  # solely by DIAGNOSTICS_TOKEN, which lives in the Secret, not here. Without that
+  # token every diagnostics request is rejected with 401.
+  DIAG_LOG_BUFFER_SIZE: "2000"
+  DIAG_REDACT_URLS: "query"
+  # Reported in the diagnostics snapshot so prod is distinguishable from staging.
+  ENVIRONMENT: "production"
   # DOMAIN must be the externally reachable address for this Service/Ingress —
   # set per environment (dev/staging/prod), not baked in here.
   DOMAIN: "<set-per-environment>"
