@@ -51,6 +51,10 @@ WORKDIR /app
 # - libgomp1: Required by NumPy/torch for parallel processing
 # - libzbar0: Required by pyzbar (fast-path QR decoder; without it
 #   pyzbar silently fails and every QR check falls back to YOLO ~1-2s)
+# - tini: correct PID 1 signal handling (SIGTERM -> graceful uvicorn shutdown)
+#   and zombie reaping, baked into the image itself so it works under ANY
+#   orchestrator (Kubernetes, plain `docker run`), not just Docker Compose's
+#   own `init: true` (which only takes effect when launched via Compose).
 # MediaPipe is no longer a dependency (Stage 1 validation runs on CLIP) — only
 # its GLES/EGL packages (libgles2, libegl1) were actually MediaPipe-specific
 # and are correctly dropped; libgl1/libglib2.0-0 stay because cv2 needs them
@@ -63,6 +67,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgomp1 \
     libzbar0 \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy pre-built virtual environment from builder stage
@@ -126,7 +131,14 @@ USER appuser
 # Default port is 8010 (configurable via docker run -p)
 EXPOSE 8010
 
-# Configure health check for orchestration systems (Kubernetes, Docker Compose, Swarm)
+# Configure health check for Docker Compose / Swarm.
+# NOTE: Kubernetes does NOT read this HEALTHCHECK instruction at all — the
+# kubelet only uses liveness/readiness probes defined in the Pod spec itself.
+# Whoever wires this image into Kubernetes needs exactly two facts, both
+# already fixed by this image regardless of orchestrator:
+#   - Port:        8010 (see EXPOSE above)
+#   - Health path: GET /v1/health (returns 200 once the process is up;
+#                  does not deep-check CLIP/model state)
 # - Tests: GET /v1/health endpoint (liveness probe)
 # - Interval: Check every 30 seconds
 # - Timeout: Fail if response takes >10 seconds
@@ -139,6 +151,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # ============================================================================
 # Startup command — Run the FastAPI application
 # ============================================================================
+# tini as PID 1 (see the tini apt-get install above): forwards SIGTERM to
+# uvicorn for graceful shutdown and reaps zombie processes, regardless of
+# whether the container is launched via Compose, `docker run`, or Kubernetes.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 # - uvicorn: ASGI server for FastAPI
 # - --host 0.0.0.0: Listen on all network interfaces (required for Docker)
 # - --port 8010: Default port (set in config.py, can override with env var)
