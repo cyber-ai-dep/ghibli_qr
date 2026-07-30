@@ -220,6 +220,7 @@ That single response is the operational dashboard for this service:
 | `memory` | Current and peak RSS — check against the container limit |
 | `storage` | tmp file counts by prefix, bytes used, free disk |
 | `config` | Effective configuration (secrets as presence + fingerprint only) |
+| `rateLimiting` | Live state of the production rate limiter: `requestsInWindow`, `remainingCapacity`, `currentlyLimiting`, `windowResetInSeconds`, and observed 429 count |
 | `recentLogs` | The latest entries inline, so one call usually explains an incident |
 
 Narrow the embedded logs with `?logLimit=50&logLevel=WARNING`, or omit them with
@@ -281,3 +282,51 @@ curl -s -X DELETE -H "$H" "$DOMAIN/v1/diagnostics/logs" | jq
   on `/v1/diagnostics` as defence in depth.
 - With more than one replica, a request through the ingress reaches whichever pod
   the load balancer picked. Use `kubectl port-forward` to target a specific pod.
+
+#### Investigating "clients are getting 429s"
+
+`rateLimiting` in the snapshot reflects the actual limiter in `main.py` — it reads
+that limiter's own sliding-window deque, so the numbers are its live state, not a
+second counter kept in parallel.
+
+```bash
+curl -s -H "$H" "$DOMAIN/v1/diagnostics" | jq '.data.rateLimiting'
+```
+
+```jsonc
+{
+  "enabled": true,
+  "backend": "in-memory sliding window (collections.deque, per-process)",
+  "scope": "global — all callers share one window; not per-IP or per-key",
+  "policy": "60 requests per 60s",
+  "requestsInWindow": 60,        // what actually governs admission
+  "remainingCapacity": 0,
+  "utilization": 1.0,
+  "currentlyLimiting": true,     // it is rejecting right now
+  "windowResetInSeconds": 12.4,  // when capacity frees up
+  "trackedEntries": 61,          // includes entries not yet pruned
+  "expiredEntriesPendingPrune": 1,
+  "rejectedResponsesObserved": 37
+}
+```
+
+Reading this section is safe on a hot service: it takes O(1) length and endpoint
+reads plus a scan that stops at the first non-expired entry, never mutates the
+limiter, and makes no outbound calls.
+
+Two fields need interpreting carefully:
+
+- **`trackedEntries` vs `requestsInWindow`** — the limiter prunes expired entries
+  lazily, only when a rate-limited path is hit. After traffic stops, entries linger.
+  `requestsInWindow` excludes them and is the number that governs admission;
+  `trackedEntries` is just what is physically held.
+- **`rejectedResponsesObserved`** — the limiter itself keeps **no** rejection
+  counter (its deque stores only *allowed* timestamps), so this is counted at the
+  HTTP layer by the diagnostics middleware. It is exact rather than estimated,
+  because `main.py`'s limiter is the only source of HTTP 429 in this service — the
+  ARK 429 handled in `routes.py` is converted to a `500 STAGE1_API_ERROR` and never
+  reaches the client as a 429. It resets on restart, like every other counter here.
+
+Because the limiter is **global**, `currentlyLimiting: true` means *the service as a
+whole* is at capacity — not one noisy client. There are no per-caller buckets to
+inspect, and no client IPs are stored anywhere in the limiter.

@@ -269,6 +269,102 @@ def collect_storage(tmp_path: Path) -> dict:
     return result
 
 
+def collect_rate_limiting(settings) -> dict:
+    """Live state of the production rate limiter defined in main.py.
+
+    Reads the limiter's own `_request_timestamps` deque — there is no second
+    counter and no duplicated logic here. The limiter is hand-rolled on
+    `collections.deque` (no library, no Redis), holds only `time.monotonic()`
+    floats, and is GLOBAL rather than per-caller: every client shares one window,
+    so there are no buckets and no client identifiers to expose.
+
+    Accuracy note: the limiter prunes expired entries lazily, only when a
+    rate-limited path is hit. `len(deque)` alone therefore over-reports after
+    traffic stops. This counts the non-expired entries instead, scanning from the
+    left and stopping at the first live one — stale entries are always leftmost
+    because the deque is append-ordered by time. Typically O(1), worst case
+    O(maxRequests) since the limiter never appends past its own limit.
+
+    Never mutates the deque: pruning is the limiter's job, and doing it here
+    would change request-admission behaviour from a read-only endpoint.
+    """
+    # Late import — main.py imports this package's siblings, so importing it at
+    # module level would create a cycle (same pattern as collect_concurrency).
+    from src.ghibli_portrait import main as app_main
+
+    enabled = bool(getattr(settings, "RATE_LIMIT_ENABLED", False))
+    max_requests = int(getattr(settings, "RATE_LIMIT_MAX_REQUESTS", 0))
+    window = int(getattr(settings, "RATE_LIMIT_WINDOW_SECONDS", 0))
+
+    out: dict = {
+        "enabled": enabled,
+        # Deliberately concrete: an operator paging at 3am needs to know this is
+        # per-process memory, so it resets on restart and does not span replicas.
+        "backend": "in-memory sliding window (collections.deque, per-process)",
+        "scope": "global — all callers share one window; not per-IP or per-key",
+        "policy": f"{max_requests} requests per {window}s",
+        "maxRequests": max_requests,
+        "windowSeconds": window,
+        "limitedPaths": sorted(app_main._RATE_LIMITED_PATHS),
+    }
+
+    timestamps = getattr(app_main, "_request_timestamps", None)
+    if timestamps is None:
+        out["storageHealthy"] = False
+        out["storageError"] = "limiter deque not found"
+        return out
+
+    # Snapshot len() first (O(1)); the deque can only be mutated by the event
+    # loop, which is not running concurrently with this synchronous read.
+    tracked = len(timestamps)
+    cutoff = time.monotonic() - window
+
+    expired = 0
+    for stamp in timestamps:          # ascending; stale entries are leftmost
+        if stamp >= cutoff:
+            break
+        expired += 1
+
+    in_window = tracked - expired
+    remaining = max(0, max_requests - in_window)
+
+    out.update({
+        "storageHealthy": True,
+        # Entries physically held, including ones not yet pruned.
+        "trackedEntries": tracked,
+        # The number that actually governs admission right now.
+        "requestsInWindow": in_window,
+        "expiredEntriesPendingPrune": expired,
+        "remainingCapacity": remaining,
+        "utilization": round(in_window / max_requests, 4) if max_requests else None,
+        "currentlyLimiting": enabled and in_window >= max_requests,
+    })
+
+    # When the window frees up, derived from the oldest live entry. Ages only —
+    # raw monotonic values are process-relative and meaningless to a caller.
+    if in_window:
+        oldest_live = timestamps[expired] if expired else timestamps[0]
+        age = time.monotonic() - oldest_live
+        out["oldestRequestAgeSeconds"] = round(age, 1)
+        out["windowResetInSeconds"] = round(max(0.0, window - age), 1)
+    else:
+        out["oldestRequestAgeSeconds"] = None
+        out["windowResetInSeconds"] = 0.0
+
+    # The limiter keeps no rejection counter of its own — it stores only ALLOWED
+    # request timestamps. This figure is observed independently at the HTTP layer
+    # by the diagnostics middleware, which already records every response status.
+    # It is exact rather than estimated: main.py's limiter is the only source of
+    # HTTP 429 in this service (the ARK 429 handled in routes.py is converted to
+    # a 500 STAGE1_API_ERROR and never surfaces as a 429).
+    from src.ghibli_portrait.diagnostics.metrics import METRICS
+
+    out["rejectedResponsesObserved"] = METRICS.rate_limited_responses
+    out["rejectedCounterSource"] = "http-layer observation (limiter keeps no rejection counter)"
+
+    return out
+
+
 def collect_config(settings) -> dict:
     """Explicit ALLOW-LIST of settings.
 

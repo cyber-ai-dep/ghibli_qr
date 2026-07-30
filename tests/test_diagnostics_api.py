@@ -152,9 +152,9 @@ def test_snapshot_contains_every_operational_section():
     data = client.get("/v1/diagnostics", headers=_auth()).json()["data"]
 
     assert set(data) == {
-        "service", "health", "requestId", "requests", "concurrency",
-        "pendingTasks", "models", "memory", "storage", "config",
-        "logBuffer", "recentLogs",
+        "service", "health", "requestId", "requests", "rateLimiting",
+        "concurrency", "pendingTasks", "models", "memory", "storage",
+        "config", "logBuffer", "recentLogs",
     }
     assert {"version", "gitCommit", "environment", "uptimeSeconds", "startedAt"} <= set(data["service"])
     assert {"totalRequests", "activeRequests", "errorsTotal", "errorRate"} <= set(data["requests"])

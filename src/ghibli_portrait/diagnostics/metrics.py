@@ -39,6 +39,13 @@ class RequestMetrics:
         self.unhandled_exceptions = 0
         self.last_error_at: Optional[float] = None
         self.total_duration_ms = 0.0
+        # Exact count of 429 responses. The production rate limiter in main.py
+        # stores only ALLOWED request timestamps and keeps no rejection counter,
+        # so this is observed here instead — at the HTTP layer that already
+        # records every response. It is not a second limiter and holds no
+        # limiter state; it is exact because main.py's limiter is the only
+        # source of HTTP 429 in this service.
+        self.rate_limited_responses = 0
 
     def request_started(self) -> None:
         self.active += 1
@@ -53,6 +60,9 @@ class RequestMetrics:
         bucket = f"{status // 100}xx"
         if bucket in self.by_class:
             self.by_class[bucket] += 1
+
+        if status == 429:
+            self.rate_limited_responses += 1
 
         if status >= 400:
             self.errors_total += 1
@@ -77,6 +87,7 @@ class RequestMetrics:
             "byStatusClass": dict(self.by_class),
             "byEndpoint": dict(sorted(self.by_endpoint.items(), key=lambda kv: -kv[1])),
             "errorsTotal": self.errors_total,
+            "rateLimitedResponses": self.rate_limited_responses,
             "unhandledExceptions": self.unhandled_exceptions,
             "errorRate": round(error_rate, 4),
             "avgDurationMs": round(avg, 1),

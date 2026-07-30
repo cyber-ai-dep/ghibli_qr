@@ -148,9 +148,27 @@ def build_router(settings) -> APIRouter:
         description=(
             "**Internal operational use only.** Aggregates everything needed to assess "
             "this service in one call: build identity and uptime, a rolled-up health "
-            "verdict, request/error counters, concurrency saturation, in-flight "
-            "generation tasks, model load state, memory usage, temp-storage usage, "
-            "effective configuration, and the most recent log entries.\n\n"
+            "verdict, request/error counters, **live rate-limiter state**, concurrency "
+            "saturation, in-flight generation tasks, model load state, memory usage, "
+            "temp-storage usage, effective configuration, and the most recent log entries."
+            "\n\n"
+            "**`rateLimiting`** reflects the real production limiter that protects the "
+            "billed generation endpoints — it reads that limiter's own sliding-window "
+            "deque, not a copy. Key fields:\n"
+            "- `requestsInWindow` / `remainingCapacity` / `utilization` — how close the "
+            "service is to rejecting traffic right now.\n"
+            "- `currentlyLimiting` — whether it is actively rejecting.\n"
+            "- `windowResetInSeconds` — when capacity frees up.\n"
+            "- `trackedEntries` vs `requestsInWindow` — the limiter prunes expired "
+            "entries lazily, so these differ when traffic is idle; "
+            "`requestsInWindow` is the number that governs admission.\n"
+            "- `rejectedResponsesObserved` — count of 429s. The limiter stores only "
+            "*allowed* request timestamps and keeps no rejection counter, so this is "
+            "observed at the HTTP layer; it is exact because that limiter is the only "
+            "source of HTTP 429 in this service.\n\n"
+            "The limiter is global (one shared window, not per-IP or per-key), so there "
+            "are no buckets and no client identifiers — nothing caller-specific exists "
+            "to expose.\n\n"
             "Secrets are never included — API keys are reported as a presence boolean "
             "plus a non-invertible fingerprint. Reads in-process state only; makes no "
             "outbound calls and adds no load to the generation pipeline."
@@ -192,6 +210,7 @@ def build_router(settings) -> APIRouter:
                     "health": runtime.collect_health(models, concurrency, config),
                     "requestId": get_request_id(),
                     "requests": METRICS.snapshot(),
+                    "rateLimiting": runtime.collect_rate_limiting(settings),
                     "concurrency": concurrency,
                     "pendingTasks": runtime.collect_pending_tasks(),
                     "models": models,
