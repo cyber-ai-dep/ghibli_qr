@@ -48,9 +48,19 @@ services:
       - ghibli_tmp:/app/src/static/tmp
       - ./src/static/lock.png:/app/src/static/lock.png:ro
 
-    # Memory ceiling: one CLIP model copy is ~1.5GB RSS once loaded (--workers 1
+    # Memory ceiling: one CLIP model copy is ~1GB RSS once loaded (--workers 1
     # confirmed above via the Dockerfile CMD, so there is exactly one copy).
-    mem_limit: 2g
+    # Was 2g — a live test (40 real concurrent /v1/ghibli-qr requests,
+    # 2026-07-30) proved this too tight: the kernel OOM-killer killed uvicorn
+    # mid-burst (dmesg: anon-rss ~2.08GB at kill), crashing the whole
+    # container and dropping ~15 in-flight requests with a connection reset.
+    # Concurrent decoded images (before thumbnailing) plus CLIP tensors can
+    # transiently exceed the ~1GB baseline by more than expected under a real
+    # burst. Raised to 4g — trivial given this host has 15GB total / 12GB+
+    # free — and re-confirmed with the IDENTICAL 40-request burst: all 40
+    # completed correctly, container stayed healthy throughout, settled at
+    # ~2GB (well inside the new ceiling).
+    mem_limit: ${MEM_LIMIT:-4g}
 
     # Health check
     healthcheck:
