@@ -105,6 +105,21 @@ class Settings:
     # Comma-separated allowed client IPs, only read when PRIVATE_MODE=true.
     ALLOWED_IPS = {ip.strip() for ip in os.getenv("ALLOWED_IPS", "").split(",") if ip.strip()}
 
+    # Rate limiting on the two billed generation endpoints (/v1/ghibli,
+    # /v1/ghibli-qr) — a safety net against runaway ARK cost from a bug, a
+    # retry loop, or misconfiguration on the caller's side. This is DIFFERENT
+    # from GENERATION_CONCURRENCY_LIMIT: the semaphore caps how many requests
+    # run AT ONCE; this caps how many can be SUBMITTED over time, regardless
+    # of concurrency. Default cap (60 req / 60s) sits well above the real
+    # sustained throughput this service can produce (~24 concurrent requests
+    # at ~48s avg each, per the 2026-07-22 load test, is roughly 30 req/min at
+    # full capacity) while still catching a genuine runaway (thousands/min).
+    # Enabled by default — unlike PRIVATE_MODE, an unset rate limit provides
+    # zero protection, so "off by default" would defeat the point.
+    RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() in {"1", "true", "yes"}
+    RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "60"))
+    RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+
     # TTL for files in static/tmp/ — differentiated by filename prefix.
     # stage1_* and qrlock_* are intermediate assets; final_* are client deliverables.
     # All values must be positive integers (hours). Invalid values fall back to the default.

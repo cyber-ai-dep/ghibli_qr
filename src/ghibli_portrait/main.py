@@ -13,6 +13,7 @@ logging.basicConfig(
 
 import asyncio
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
@@ -167,6 +168,47 @@ async def _access_control(request: Request, call_next):
                     )],
                 ).model_dump(by_alias=True),
             )
+    return await call_next(request)
+
+
+# ============================================================================
+# Rate limiting — safety net against runaway ARK cost, independent from the
+# concurrency semaphores (those cap simultaneous in-flight requests, not
+# requests submitted over time). In-memory sliding window; safe under
+# --workers 1 (single process, single event loop) — the same assumption
+# pending_tasks and every semaphore in routes.py already rely on.
+# Applies ONLY to the two billed generation endpoints. /v1/health and the
+# free QR utility routes are never rate-limited.
+# ============================================================================
+_RATE_LIMITED_PATHS = {"/v1/ghibli", "/v1/ghibli-qr"}
+_request_timestamps: deque = deque()
+
+
+@app.middleware("http")
+async def _rate_limiter(request: Request, call_next):
+    if s.RATE_LIMIT_ENABLED and request.url.path in _RATE_LIMITED_PATHS:
+        now = time.monotonic()
+        cutoff = now - s.RATE_LIMIT_WINDOW_SECONDS
+        while _request_timestamps and _request_timestamps[0] < cutoff:
+            _request_timestamps.popleft()
+        if len(_request_timestamps) >= s.RATE_LIMIT_MAX_REQUESTS:
+            return JSONResponse(
+                status_code=429,
+                headers={"Retry-After": str(s.RATE_LIMIT_WINDOW_SECONDS)},
+                content=error_response(
+                    message="Rate limit exceeded",
+                    errors=[ApiError(
+                        code="RATE_LIMIT_EXCEEDED",
+                        type=ErrorType.VALIDATION_ERROR,
+                        stage=ErrorStage.ORCHESTRATION,
+                        message=(
+                            f"Max {s.RATE_LIMIT_MAX_REQUESTS} generation requests per "
+                            f"{s.RATE_LIMIT_WINDOW_SECONDS}s exceeded. Retry after the window clears."
+                        ),
+                    )],
+                ).model_dump(by_alias=True),
+            )
+        _request_timestamps.append(now)
     return await call_next(request)
 
 

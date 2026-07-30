@@ -24,3 +24,7 @@ data:
   # "true" + set ALLOWED_IPS per environment to restrict non-/v1/health routes.
   PRIVATE_MODE: "false"
   ALLOWED_IPS: ""
+  # Safety net against runaway ARK cost — see main.py's rate-limit middleware.
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_MAX_REQUESTS: "60"
+  RATE_LIMIT_WINDOW_SECONDS: "60"
