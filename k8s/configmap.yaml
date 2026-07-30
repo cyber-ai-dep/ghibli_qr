@@ -22,3 +22,7 @@ data:
   # DOMAIN must be the externally reachable address for this Service/Ingress —
   # set per environment (dev/staging/prod), not baked in here.
   DOMAIN: "<set-per-environment>"
+  # See main.py's access-control middleware. Default fully open; flip to
+  # "true" + set ALLOWED_IPS per environment to restrict non-/v1/health routes.
+  PRIVATE_MODE: "false"
+  ALLOWED_IPS: ""

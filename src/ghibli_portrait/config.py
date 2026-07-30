@@ -103,6 +103,16 @@ class Settings:
     # false positives consistently. Re-enable with a strong identity-preserving model.
     ENABLE_IDENTITY_CHECK = os.getenv("ENABLE_IDENTITY_CHECK", "false").lower() in {"1", "true", "yes"}
 
+    # Optional app-level access control, independent of any network/firewall
+    # setup. Default is fully open (matches today's behavior exactly, zero
+    # risk). Flip PRIVATE_MODE=true + set ALLOWED_IPS to restrict every route
+    # except /v1/health to a fixed set of caller IPs — no code change needed,
+    # just a .env edit + container restart. See main.py's access-control
+    # middleware for the enforcement and the /v1/health exemption rationale.
+    PRIVATE_MODE = os.getenv("PRIVATE_MODE", "false").lower() in {"1", "true", "yes"}
+    # Comma-separated allowed client IPs, only read when PRIVATE_MODE=true.
+    ALLOWED_IPS = {ip.strip() for ip in os.getenv("ALLOWED_IPS", "").split(",") if ip.strip()}
+
     # TTL for files in static/tmp/ — differentiated by filename prefix.
     # stage1_* and qrlock_* are intermediate assets; final_* are client deliverables.
     # All values must be positive integers (hours). Invalid values fall back to the default.
@@ -195,3 +205,11 @@ else:
     _log.info("Final image retention TTL: %dh (set PERSIST_FINAL_IMAGES=true to keep indefinitely).", Settings.FINAL_IMAGE_TTL_HOURS)
 if Settings.SAVE_OUTPUT_LOCAL:
     _log.info("SAVE_OUTPUT_LOCAL=true — final images are also saved to %s", Settings.OUTPUT_DIR)
+if Settings.PRIVATE_MODE:
+    if Settings.ALLOWED_IPS:
+        _log.info("PRIVATE_MODE=true — only these IPs may call any route except /v1/health: %s", sorted(Settings.ALLOWED_IPS))
+    else:
+        _log.warning(
+            "PRIVATE_MODE=true but ALLOWED_IPS is empty — every caller except /v1/health "
+            "will get 403 Forbidden (fail-closed). Set ALLOWED_IPS if this isn't intended."
+        )

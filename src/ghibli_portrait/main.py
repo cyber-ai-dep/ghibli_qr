@@ -130,6 +130,46 @@ app = FastAPI(
     openapi_tags=TAGS_METADATA,
 )
 
+# ============================================================================
+# Optional access control — default OFF (PRIVATE_MODE=false), identical to
+# today's fully-open behavior with zero risk. Toggle via .env only, no code
+# change or route edits needed:
+#   PRIVATE_MODE=true
+#   ALLOWED_IPS=1.2.3.4,5.6.7.8
+#
+# /v1/health is always exempt. Docker's own HEALTHCHECK CMD doesn't check the
+# HTTP status code, so it would tolerate a 403 — but Kubernetes' liveness/
+# readiness probes (k8s/deployment.yaml) DO check the status code, and the
+# kubelet's IP is never in ALLOWED_IPS. Exempting this one path keeps both
+# orchestrators able to monitor the process regardless of the access policy.
+#
+# request.client.host is the direct TCP peer. If a reverse proxy/CDN is ever
+# placed in front of this service, switch to trusting X-Forwarded-For instead
+# — there is none today (confirmed: no proxy config anywhere in this repo).
+# ============================================================================
+_HEALTH_PATH = "/v1/health"
+
+
+@app.middleware("http")
+async def _access_control(request: Request, call_next):
+    if s.PRIVATE_MODE and request.url.path != _HEALTH_PATH:
+        client_ip = request.client.host if request.client else None
+        if client_ip not in s.ALLOWED_IPS:
+            return JSONResponse(
+                status_code=403,
+                content=error_response(
+                    message="Access denied",
+                    errors=[ApiError(
+                        code="FORBIDDEN",
+                        type=ErrorType.VALIDATION_ERROR,
+                        stage=ErrorStage.ORCHESTRATION,
+                        message="This server is in private mode; your IP is not on the allowed list.",
+                    )],
+                ).model_dump(by_alias=True),
+            )
+    return await call_next(request)
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, asyncio.CancelledError):
