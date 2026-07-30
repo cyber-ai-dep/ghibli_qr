@@ -29,6 +29,7 @@ install_ring_buffer()
 
 import asyncio
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
@@ -163,8 +164,98 @@ app = FastAPI(
     openapi_tags=TAGS_METADATA + [DIAGNOSTICS_TAG],
 )
 
-# Binds the request id, echoes X-Request-ID, and emits one completion line per
-# request. Registered here so it wraps the router and the exception handlers below.
+# ============================================================================
+# Optional access control — default OFF (PRIVATE_MODE=false), identical to
+# today's fully-open behavior with zero risk. Toggle via .env only, no code
+# change or route edits needed:
+#   PRIVATE_MODE=true
+#   ALLOWED_IPS=1.2.3.4,5.6.7.8
+#
+# /v1/health is always exempt. Docker's own HEALTHCHECK CMD doesn't check the
+# HTTP status code, so it would tolerate a 403 — but Kubernetes' liveness/
+# readiness probes (k8s/deployment.yaml) DO check the status code, and the
+# kubelet's IP is never in ALLOWED_IPS. Exempting this one path keeps both
+# orchestrators able to monitor the process regardless of the access policy.
+#
+# request.client.host is the direct TCP peer. If a reverse proxy/CDN is ever
+# placed in front of this service, switch to trusting X-Forwarded-For instead
+# — there is none today (confirmed: no proxy config anywhere in this repo).
+# ============================================================================
+_HEALTH_PATH = "/v1/health"
+
+
+@app.middleware("http")
+async def _access_control(request: Request, call_next):
+    if s.PRIVATE_MODE and request.url.path != _HEALTH_PATH:
+        client_ip = request.client.host if request.client else None
+        if client_ip not in s.ALLOWED_IPS:
+            return JSONResponse(
+                status_code=403,
+                content=error_response(
+                    message="Access denied",
+                    errors=[ApiError(
+                        code="FORBIDDEN",
+                        type=ErrorType.VALIDATION_ERROR,
+                        stage=ErrorStage.ORCHESTRATION,
+                        message="This server is in private mode; your IP is not on the allowed list.",
+                    )],
+                ).model_dump(by_alias=True),
+            )
+    return await call_next(request)
+
+
+# ============================================================================
+# Rate limiting — safety net against runaway ARK cost, independent from the
+# concurrency semaphores (those cap simultaneous in-flight requests, not
+# requests submitted over time). In-memory sliding window; safe under
+# --workers 1 (single process, single event loop) — the same assumption
+# pending_tasks and every semaphore in routes.py already rely on.
+# Applies ONLY to the two billed generation endpoints. /v1/health and the
+# free QR utility routes are never rate-limited.
+# ============================================================================
+_RATE_LIMITED_PATHS = {"/v1/ghibli", "/v1/ghibli-qr"}
+_request_timestamps: deque = deque()
+
+
+@app.middleware("http")
+async def _rate_limiter(request: Request, call_next):
+    if s.RATE_LIMIT_ENABLED and request.url.path in _RATE_LIMITED_PATHS:
+        now = time.monotonic()
+        cutoff = now - s.RATE_LIMIT_WINDOW_SECONDS
+        while _request_timestamps and _request_timestamps[0] < cutoff:
+            _request_timestamps.popleft()
+        if len(_request_timestamps) >= s.RATE_LIMIT_MAX_REQUESTS:
+            return JSONResponse(
+                status_code=429,
+                headers={"Retry-After": str(s.RATE_LIMIT_WINDOW_SECONDS)},
+                content=error_response(
+                    message="Rate limit exceeded",
+                    errors=[ApiError(
+                        code="RATE_LIMIT_EXCEEDED",
+                        type=ErrorType.VALIDATION_ERROR,
+                        stage=ErrorStage.ORCHESTRATION,
+                        message=(
+                            f"Max {s.RATE_LIMIT_MAX_REQUESTS} generation requests per "
+                            f"{s.RATE_LIMIT_WINDOW_SECONDS}s exceeded. Retry after the window clears."
+                        ),
+                    )],
+                ).model_dump(by_alias=True),
+            )
+        _request_timestamps.append(now)
+    return await call_next(request)
+
+
+# ============================================================================
+# Request context — MUST be registered last.
+#
+# Starlette makes the most recently added middleware the OUTERMOST layer, so
+# adding this after the two above puts it first in the chain. That is what we
+# want: requests rejected by _access_control (403) or _rate_limiter (429) still
+# get a request id bound, still receive the X-Request-ID header, still increment
+# the diagnostics counters, and still produce a completion log line. Registering
+# it earlier would make exactly the blocked requests — the ones worth
+# investigating — invisible to /v1/diagnostics.
+# ============================================================================
 app.add_middleware(RequestContextMiddleware)
 
 

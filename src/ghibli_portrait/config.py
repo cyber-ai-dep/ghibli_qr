@@ -65,14 +65,6 @@ class Settings:
     # Validation Settings
     # If enabled, requests without a detectable face are rejected before generation.
     REQUIRE_HUMAN_FACE = os.getenv("REQUIRE_HUMAN_FACE", "true").lower() in {"1", "true", "yes"}
-    # Reject if more than this number of faces are detected (set to 0 to disable the limit).
-    MAX_FACES = int(os.getenv("MAX_FACES", "1"))
-    # Minimum face area ratio (face_bbox_area / image_area). Helps reject tiny/far faces.
-    MIN_FACE_AREA_RATIO = float(os.getenv("MIN_FACE_AREA_RATIO", "0.03"))
-    # Max concurrent MediaPipe face-detection operations. MediaPipe is no longer
-    # called from the request path (see CLIP_CONCURRENCY_LIMIT below) — kept
-    # defined, unreferenced, alongside the MediaPipe code it used to size.
-    MAX_MEDIAPIPE_CONCURRENCY = int(os.getenv("MAX_MEDIAPIPE_CONCURRENCY", "15"))
 
     # Max concurrent CLIP classification operations (Stage 1 human-portrait gate).
     # CLIP inference is pinned to 1 torch thread per call (see
@@ -103,6 +95,31 @@ class Settings:
     # false positives consistently. Re-enable with a strong identity-preserving model.
     ENABLE_IDENTITY_CHECK = os.getenv("ENABLE_IDENTITY_CHECK", "false").lower() in {"1", "true", "yes"}
 
+    # Optional app-level access control, independent of any network/firewall
+    # setup. Default is fully open (matches today's behavior exactly, zero
+    # risk). Flip PRIVATE_MODE=true + set ALLOWED_IPS to restrict every route
+    # except /v1/health to a fixed set of caller IPs — no code change needed,
+    # just a .env edit + container restart. See main.py's access-control
+    # middleware for the enforcement and the /v1/health exemption rationale.
+    PRIVATE_MODE = os.getenv("PRIVATE_MODE", "false").lower() in {"1", "true", "yes"}
+    # Comma-separated allowed client IPs, only read when PRIVATE_MODE=true.
+    ALLOWED_IPS = {ip.strip() for ip in os.getenv("ALLOWED_IPS", "").split(",") if ip.strip()}
+
+    # Rate limiting on the two billed generation endpoints (/v1/ghibli,
+    # /v1/ghibli-qr) — a safety net against runaway ARK cost from a bug, a
+    # retry loop, or misconfiguration on the caller's side. This is DIFFERENT
+    # from GENERATION_CONCURRENCY_LIMIT: the semaphore caps how many requests
+    # run AT ONCE; this caps how many can be SUBMITTED over time, regardless
+    # of concurrency. Default cap (60 req / 60s) sits well above the real
+    # sustained throughput this service can produce (~24 concurrent requests
+    # at ~48s avg each, per the 2026-07-22 load test, is roughly 30 req/min at
+    # full capacity) while still catching a genuine runaway (thousands/min).
+    # Enabled by default — unlike PRIVATE_MODE, an unset rate limit provides
+    # zero protection, so "off by default" would defeat the point.
+    RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() in {"1", "true", "yes"}
+    RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "60"))
+    RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+
     # ------------------------------------------------------------------
     # Diagnostics API (/v1/diagnostics) — internal operational use only.
     #
@@ -125,9 +142,12 @@ class Settings:
     STAGE1_TTL_HOURS: int = _parse_ttl_hours("STAGE1_TTL_HOURS", 2)
     QRLOCK_TTL_HOURS: int = _parse_ttl_hours("QRLOCK_TTL_HOURS", 2)
     FINAL_IMAGE_TTL_HOURS: int = _parse_ttl_hours("FINAL_IMAGE_TTL_HOURS", 24)
-    # When true, final_ images are never auto-deleted regardless of TTL.
+    # When true, final_ images (the Stage 2 Ghibli+QR composite — the actual
+    # client deliverable) are never auto-deleted regardless of TTL. Defaults to
+    # true: these are the one artifact this service must never silently lose;
+    # intermediate stage1_/qrlock_ files keep their own short TTLs above.
     # Use explicit boolean — never encode "never delete" as a magic TTL value.
-    PERSIST_FINAL_IMAGES: bool = os.getenv("PERSIST_FINAL_IMAGES", "false").lower() in {"1", "true", "yes"}
+    PERSIST_FINAL_IMAGES: bool = os.getenv("PERSIST_FINAL_IMAGES", "true").lower() in {"1", "true", "yes"}
     PROMPT_PIC_TO_GHIBLI = (
         "Studio Ghibli hand-painted illustration of this exact person, based strictly on "
         "what is visibly present in the source photo — do not infer, guess, or add anything not seen. "
@@ -211,3 +231,11 @@ else:
     _log.info("Final image retention TTL: %dh (set PERSIST_FINAL_IMAGES=true to keep indefinitely).", Settings.FINAL_IMAGE_TTL_HOURS)
 if Settings.SAVE_OUTPUT_LOCAL:
     _log.info("SAVE_OUTPUT_LOCAL=true — final images are also saved to %s", Settings.OUTPUT_DIR)
+if Settings.PRIVATE_MODE:
+    if Settings.ALLOWED_IPS:
+        _log.info("PRIVATE_MODE=true — only these IPs may call any route except /v1/health: %s", sorted(Settings.ALLOWED_IPS))
+    else:
+        _log.warning(
+            "PRIVATE_MODE=true but ALLOWED_IPS is empty — every caller except /v1/health "
+            "will get 403 Forbidden (fail-closed). Set ALLOWED_IPS if this isn't intended."
+        )

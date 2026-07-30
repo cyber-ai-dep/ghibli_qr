@@ -41,18 +41,33 @@ WORKDIR /app
 
 # Install only runtime dependencies (no build tools)
 # - libsm6, libxext6, libxrender-dev: Required by OpenCV (cv2)
+# - libgl1, libglib2.0-0: Required by cv2 itself (qreader -> cv2 imports it
+#   unconditionally at module load, even with the "headless"
+#   opencv-python-headless wheel) — confirmed by a from-scratch build+run:
+#   without both, the app crashes immediately on startup ("ImportError:
+#   libGL.so.1" / "libgthread-2.0.so.0: cannot open shared object file"),
+#   before uvicorn even finishes loading the app module. This is NOT
+#   MediaPipe-related; do not remove these again for that reason.
 # - libgomp1: Required by NumPy/torch for parallel processing
 # - libzbar0: Required by pyzbar (fast-path QR decoder; without it
 #   pyzbar silently fails and every QR check falls back to YOLO ~1-2s)
-# MediaPipe is no longer a dependency (Stage 1 validation runs on CLIP) — its
-# GL-context packages (libgl1, libglib2.0-0, libgles2, libegl1) were dropped.
-# These are stripped from build stage and added fresh for security
+# - tini: correct PID 1 signal handling (SIGTERM -> graceful uvicorn shutdown)
+#   and zombie reaping, baked into the image itself so it works under ANY
+#   orchestrator (Kubernetes, plain `docker run`), not just Docker Compose's
+#   own `init: true` (which only takes effect when launched via Compose).
+# MediaPipe is no longer a dependency (Stage 1 validation runs on CLIP) — only
+# its GLES/EGL packages (libgles2, libegl1) were actually MediaPipe-specific
+# and are correctly dropped; libgl1/libglib2.0-0 stay because cv2 needs them
+# independently of MediaPipe (see above).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     libxext6 \
     libxrender-dev \
+    libgl1 \
+    libglib2.0-0 \
     libgomp1 \
     libzbar0 \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy pre-built virtual environment from builder stage
@@ -98,9 +113,23 @@ RUN mkdir -p src/static/tmp
 # in the venv) and requires build-time network access to fetch the checkpoint.
 RUN python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-32-quickgelu', pretrained='openai', cache_dir='/app/.cache/clip')"
 
+# Bake the QReader/qrdet YOLO weights the same way and for the same reason.
+# qrdet's default weights_folder lives under site-packages (inside /opt/venv,
+# which stays root-owned — only /app is chown'd below), and QReader() is
+# instantiated at MODULE IMPORT TIME in qr_validation.py, not lazily. Without
+# this bake, the appuser process crashes on startup with PermissionError
+# trying to os.makedirs() that root-owned path (confirmed by a from-scratch
+# build+run). Baking here downloads it once, as root, matching the exact
+# model_size the app uses — at runtime the weights file + release marker
+# already match, so qrdet's own code takes its "already downloaded" path and
+# never attempts to write anywhere, regardless of the appuser/root ownership
+# split. This must stay in sync with QR_MODEL_SIZE in qr_validation.py.
+RUN python -c "from qreader import QReader; QReader(model_size='s')"
+
 # Run as a non-root user — reduces blast radius if the process is ever
-# compromised. Created after the CLIP bake step (needs root to write into
-# /app/.cache) and chown'd so the app can still write to static/tmp/ and .cache.
+# compromised. Created after the CLIP/QReader bake steps (both need root to
+# write into their respective cache paths) and chown'd so the app can still
+# write to static/tmp/ and .cache.
 RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app
 USER appuser
@@ -109,7 +138,14 @@ USER appuser
 # Default port is 8010 (configurable via docker run -p)
 EXPOSE 8010
 
-# Configure health check for orchestration systems (Kubernetes, Docker Compose, Swarm)
+# Configure health check for Docker Compose / Swarm.
+# NOTE: Kubernetes does NOT read this HEALTHCHECK instruction at all — the
+# kubelet only uses liveness/readiness probes defined in the Pod spec itself.
+# Whoever wires this image into Kubernetes needs exactly two facts, both
+# already fixed by this image regardless of orchestrator:
+#   - Port:        8010 (see EXPOSE above)
+#   - Health path: GET /v1/health (returns 200 once the process is up;
+#                  does not deep-check CLIP/model state)
 # - Tests: GET /v1/health endpoint (liveness probe)
 # - Interval: Check every 30 seconds
 # - Timeout: Fail if response takes >10 seconds
@@ -122,6 +158,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # ============================================================================
 # Startup command — Run the FastAPI application
 # ============================================================================
+# tini as PID 1 (see the tini apt-get install above): forwards SIGTERM to
+# uvicorn for graceful shutdown and reaps zombie processes, regardless of
+# whether the container is launched via Compose, `docker run`, or Kubernetes.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 # - uvicorn: ASGI server for FastAPI
 # - --host 0.0.0.0: Listen on all network interfaces (required for Docker)
 # - --port 8010: Default port (set in config.py, can override with env var)
