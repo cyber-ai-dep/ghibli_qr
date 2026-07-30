@@ -6,9 +6,13 @@ services:
 
     container_name: ghibli-api-v1
 
-    # Reap zombie processes and forward SIGTERM correctly to uvicorn for
-    # graceful shutdown (PID 1 in a container doesn't do this by default).
-    init: true
+    # NOTE: no `init: true` here on purpose. tini is baked into the image
+    # itself (see Dockerfile ENTRYPOINT) so it already handles SIGTERM
+    # forwarding and zombie reaping as PID 1 — adding Compose's own init on
+    # top just wraps it in a redundant docker-init layer (confirmed: tini
+    # then logs "not running as PID 1" and refuses to act as subreaper).
+    # This keeps the image behaving identically under Compose, `docker run`,
+    # or Kubernetes, with no orchestrator-specific flag needed anywhere.
 
     # Blocks privilege escalation (e.g. via setuid binaries) inside the
     # container; the image already runs as a non-root user (see Dockerfile).
