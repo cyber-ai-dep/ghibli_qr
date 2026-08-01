@@ -1,273 +1,118 @@
-# Ghibli Portrait API - Developer Documentation
+# Ghibli Portrait API — Developer Reference
 
-FastAPI service for Ghibli-style image transformation and QR code generation with lock screen overlay.
+FastAPI service that turns a portrait into Ghibli art holding a QR-code lock.
+Image generation uses **BytePlus ARK (Seedream)** — synchronous (no webhook/ngrok).
 
 ## Quick Start
 
 ```bash
-# Install dependencies
 uv sync
-
-# Set up environment variables
 cp .env.example .env
-# Edit .env with your KIE_API_KEY and other settings
+# Edit .env — set DOMAIN and ARK_API_KEY
+uv run uvicorn src.ghibli_portrait.main:app --host 0.0.0.0 --port 30820 --workers 1
+```
+Swagger: `http://localhost:30820/docs` · Health: `/v1/health`
 
-# Run the server
-uvicorn src.ghibli_portrait.main:app --reload
-```
+## Workers
 
-## API Endpoints
+`--workers 1` is mandatory: the in-memory `pending_tasks` dict delivers each
+generation result to the awaiting request in-process. Multiple workers wouldn't
+share it. Scaling beyond one worker requires moving `pending_tasks` to a shared
+store (e.g. Redis). A single worker is not a throughput bottleneck — all network
+I/O is async (httpx); only MediaPipe/PIL run in a thread pool, capped by a semaphore.
 
-### Health Check
-```
-GET /health
-```
-Returns service liveness status.
+## Environment Variables
 
-**Response:**
-```json
-{
-  "code": 200,
-  "data": {
-    "status": "healthy",
-    "timestamp": "2025-12-28T12:00:00"
-  },
-  "message": "Service is running"
-}
-```
+```bash
+# Required
+DOMAIN=http://<host>:30820          # base address for returned image URLs (no webhook)
+ARK_API_KEY=<byteplus-ark-key>
 
-### Ghibli Portrait Generation
-```
-POST /ghibli
-```
-Transforms images to Ghibli-style art using external KIE API (model: `seedream/4.5-edit`).
+# Generation (BytePlus ARK / Seedream)
+GHIBLI_MODEL=seedream-4-5-251128      # real model for Stage 1 (also reported in response)
+COMPOSE_MODEL=seedream-4-5-251128     # real model for Stage 2 (also reported in response)
+# ARK_IMAGE_SIZE=2K                   # optional ARK overrides (defaults in seedream_service.py)
+# ARK_SEED=42                         # -1 = random
+# ARK_WATERMARK=false
 
-**Request:**
-```json
-{
-  "img_urls": ["https://example.com/image.jpg"],
-  "prompt": "Convert this image to Ghibli style art.",
-  "quality": "basic",  // "basic" (2K) or "high" (4K)
-  "aspect_ratio": "1:1"  // Options: 1:1, 4:3, 3:4, 16:9, 9:16, 2:3, 3:2, 21:9
-}
-```
-
-**Response:**
-```json
-{
-  "code": 200,
-  "data": {
-    "result_urls": ["https://example.com/generated.jpg"],
-    "cost_time": 45,
-    "model": "seedream/4.5-edit",
-    "quality": "basic",
-    "aspect_ratio": "1:1"
-  },
-  "message": "Task completed successfully"
-}
-```
-
-**Notes:**
-- Async operation - waits for KIE API callback
-- Uses webhook at `/ghibli/callback` (internal)
-- Default timeout: 300 seconds (5 minutes)
-
-### Ghibli Webhook (Internal)
-```
-POST /ghibli/callback
-```
-Receives callbacks from KIE API. **Not for direct use.**
-
-### QR Code Generation
-```
-POST /qr-lock
-```
-Generates QR code embedded in lock screen image with optional URL shortening.
-
-**Request:**
-```json
-{
-  "url": "https://example.com",
-  "version": 1,  // Optional: 1-40, auto-determined if null
-  "shorten_url": true  // Optional: if true, URL is shortened before encoding in QR
-}
-```
-
-**Response:**
-```json
-{
-  "code": 200,
-  "data": {
-    "qr_url": "https://your-domain.com/tmp/{uuid}.png",
-    "encoded_url": "https://example.com",
-    "short_url": {  // Present only if shorten_url was true
-      "url": "https://your-domain.com/s/{code}",
-      "code": "{short_code}"
-    }
-  },
-  "message": "QR/Lock image created successfully."
-}
-```
-
-**Notes:**
-- When `shorten_url` is true, the QR code encodes the shortened URL instead of the original
-- URL shortening uses deterministic hashing - same URL always produces same short code
-
-### Delete QR Image
-```
-DELETE /qr-lock/{img_id}
-```
-Deletes generated QR code image by ID (with or without .png extension).
-
-**Response:**
-```json
-{
-  "code": 200,
-  "data": {
-    "deleted_id": "{uuid}"
-  },
-  "message": "Image {uuid} deleted successfully"
-}
-```
-
-### Get Shortened URL
-```
-GET /qr-url/?url={url}
-```
-Returns a shortened URL for any given URL using deterministic hashing.
-
-**Request:**
-```
-GET /qr-url/?url=https://example.com/very/long/path
-```
-
-**Response:**
-```json
-{
-  "code": 200,
-  "data": {
-    "url": "https://your-domain.com/s/{code}",
-    "code": "{short_code}"
-  },
-  "message": "Short URL is retrieved successfully"
-}
-```
-
-**Important Notes:**
-- **No validation performed**: This endpoint always returns a short code, even for invalid or non-existent URLs
-- **Deterministic**: The same URL will always produce the same short code
-- **Idempotent**: Can be called multiple times for the same URL without side effects
-- **No persistence check**: Returns short code regardless of whether the URL was previously shortened
-
-### Automated Ghibli + QR Pipeline
-```
-POST /ghibli-qr
-```
-Fully automated pipeline that:
-1. Transforms input image to Ghibli style
-2. Generates QR code with lock screen overlay
-3. Combines Ghibli image with QR lock screen
-4. Returns final composite image URL
-
-**Request:**
-```json
-{
-  "img_url": "https://example.com/photo.jpg",
-  "url": "https://example.com/destination"
-}
-```
-
-**Response:**
-```json
-{
-  "code": 200,
-  "data": {
-    "result_urls": ["https://example.com/final-ghibli-qr.jpg"],
-    "cost_time": 95,
-    "model": "seedream/4.5-edit",
-    "quality": "basic",
-    "aspect_ratio": "1:1"
-  },
-  "message": "Task completed successfully"
-}
-```
-
-**Notes:**
-- Executes two image generation tasks sequentially
-- Total cost_time includes both transformations
-- Uses predefined prompts from settings (PROMPT_PIC_TO_GHIBLI, PROMPT_GHIBLI_LOCK)
-- Automatically cleans up intermediate QR lock image reference
-
-
-## Configuration
-
-Environment variables (`.env`):
-```
-KIE_API_KEY=your_api_key
-DOMAIN=https://your-domain.com
-KIE_IMG_MODEL=seedream/4.5-edit
+# Validation
+REQUIRE_HUMAN_FACE=true
+MAX_FACES=1
+MIN_FACE_AREA_RATIO=0.03
 SHORT_CODE_LENGTH=8
+ENABLE_IDENTITY_CHECK=false
+
+# Concurrency
+MAX_MEDIAPIPE_CONCURRENCY=15          # CPU ceiling for face detection
+GENERATION_CONCURRENCY_LIMIT=8        # concurrent ARK calls (ARK allows ≤10/model)
+
+# Local saving + retention
+SAVE_OUTPUT_LOCAL=false               # also save final images under OUTPUT_DIR
+OUTPUT_DIR=output
+STAGE1_TTL_HOURS=2
+QRLOCK_TTL_HOURS=2
+FINAL_IMAGE_TTL_HOURS=24
+PERSIST_FINAL_IMAGES=false
+
+# Docker
+HOST_PORT=30820
 ```
 
-## Development
+> `GHIBLI_MODEL` / `COMPOSE_MODEL` are the real ARK model used per stage (set in
+> `.env`) and are reported in the response `model` field. `ARK_MODEL` is only the
+> fallback default when no per-stage model is given.
 
-**Commit Messages:**
-Project uses `gipt` for AI-generated commits with gitmoji style.
+## Response Envelope
 
-**Dependencies:**
-- FastAPI + Uvicorn
-- python-dotenv
-- httpx (for external API calls)
-- Pillow (for image processing)
-- qrcode (for QR generation)
+Every endpoint returns: `{ success, data, message, errors, timestamp }`
+(camelCase `data`). On error: `success:false`, `data:null`,
+`errors:[{code,type,stage,field,message}]`.
 
+## API Endpoints (prefix `/v1`)
 
-## Key Behaviors
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/health` | Liveness/readiness |
+| POST | `/v1/ghibli-qr` | **Primary** — full Ghibli + QR pipeline (`{imgUrl, url}`) |
+| POST | `/v1/ghibli` | Stage 1 only (`{imgUrls:[...]}`) |
+| POST | `/v1/qr-lock` | QR-on-lock image (`{url, version?, shortenUrl?}`) |
+| DELETE | `/v1/qr-lock/{imgId}` | Delete a temp QR image |
+| GET | `/v1/qr-url/?url=` | Deterministic URL shortener |
 
-1. **Async Ghibli Processing:**
-   - POST `/ghibli` initiates task with KIE API
-   - Server waits for callback at `/ghibli/callback`
-   - Tracks pending tasks in memory
-   - Returns final result or timeout error (300s default)
+See [usage.md](usage.md) for request/response examples.
 
-2. **QR Code Storage:**
-   - Images saved to `src/static/tmp/`
-   - Publicly accessible via server
-   - Manual cleanup via DELETE endpoint
+## Pipeline flow (`/v1/ghibli-qr`)
 
-3. **URL Shortening:**
-   - Deterministic hashing: same URL always produces same short code
-   - No validation or persistence checks performed
-   - Works for any URL (valid or invalid, existing or non-existing)
-   - Optional integration with QR code generation
+```
+validate (URL → download → MediaPipe face + synthetic check)
+  → extract skin-tone hex → inject into Stage 1 prompt
+  → Stage 1 ARK call (portrait → Ghibli)  → re-host result locally
+  → Stage 2 ARK call (Ghibli + QR-lock)   → re-host final locally
+  → QR scannability check → response
+```
+The ARK call is synchronous; its result is delivered to the orchestrator through the
+in-process `pending_tasks` Future. `routes.py` is unchanged —
+`image_service.generate_img` is the ARK adapter behind that contract.
 
-4. **Lock Screen Overlay:**
-   - Base lock image: `src/static/lock.png`
-   - QR code embedded at calculated position
-   - Output: PNG with transparency
+## Error Codes
 
-5. **Automated Pipeline (`/ghibli-qr`):**
-   - Step 1: Transform input image to Ghibli style
-   - Step 2: Generate QR lock screen image
-   - Step 3: Combine Ghibli image with QR lock overlay
-   - Sequential task execution with separate callbacks
-   - Aggregates total processing time from both transformations
-   - Returns final composite image URL
+`INVALID_IMAGE_URL`, `IMAGE_DOWNLOAD_FAILED`, `NO_FACE_DETECTED`, `MULTIPLE_FACES`,
+`NOT_REAL_PHOTO`, `FACE_DETECTOR_FAILURE`, `STAGE1_API_ERROR`, `STAGE1_TIMEOUT`,
+`IDENTITY_DRIFT_DETECTED`, `STAGE2_API_ERROR`, `STAGE2_TIMEOUT`, `INTERNAL_ERROR`.
+
+## Testing
+
+```bash
+PYTHONPATH= uv run --group test pytest -q                  # unit tests (tests/)
+uv run python tests/manual/test_concurrent.py --count 3   # manual load test
+```
+Manual/integration scripts live in `tests/manual/` (ignored by pytest).
 
 ## Troubleshooting
 
-**Callback timeout:**
-- Check `KIE_API_KEY` is valid
-- Verify `DOMAIN` is publicly accessible
-- Review webhook endpoint logs
-
-**QR generation fails:**
-- Ensure `src/static/lock.png` exists
-- Check write permissions for `tmp/` directory
-- Verify URL length vs QR version
-
-## API Documentation
-
-Interactive docs available when server is running:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+| Symptom | Fix |
+|---|---|
+| `git pull` changes don't take effect (Docker) | `docker-compose up -d --build` |
+| `.env` changes ignored | `docker-compose down && docker-compose up -d` |
+| `STAGE*_API_ERROR` / rate limit | lower `GENERATION_CONCURRENCY_LIMIT` (ARK ≤10/model) |
+| Stage 2 `IsADirectoryError ... lock.png` | ensure `src/static/lock.png` is a real PNG |

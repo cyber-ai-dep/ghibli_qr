@@ -1,0 +1,112 @@
+services:
+  ghibli-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: ghibli-api-v1
+
+    # NOTE: no `init: true` here on purpose. tini is baked into the image
+    # itself (see Dockerfile ENTRYPOINT) so it already handles SIGTERM
+    # forwarding and zombie reaping as PID 1 — adding Compose's own init on
+    # top just wraps it in a redundant docker-init layer (confirmed: tini
+    # then logs "not running as PID 1" and refuses to act as subreaper).
+    # This keeps the image behaving identically under Compose, `docker run`,
+    # or Kubernetes, with no orchestrator-specific flag needed anywhere.
+
+    # Blocks privilege escalation (e.g. via setuid binaries) inside the
+    # container; the image already runs as a non-root user (see Dockerfile).
+    security_opt:
+      - no-new-privileges:true
+
+    # Published as <BIND_ADDRESS>:<HOST_PORT> -> container 8010 (the port uvicorn
+    # listens on, fixed in the Dockerfile CMD).
+    #
+    # BIND_ADDRESS controls WHO can reach the service and is the main deployment
+    # decision here:
+    #   127.0.0.1 (default) — reachable only from this host. Nothing outside the
+    #                         server can connect, no firewall rule required.
+    #   0.0.0.0             — reachable from anywhere that can route to this host.
+    #
+    # Note that 127.0.0.1 is the HOST's loopback: other containers do NOT share
+    # it. A container that needs to call this service must join the network below
+    # and use the service name (http://ghibli-api:8010) — which is also exactly
+    # how a caller addresses it under Kubernetes, so the two environments behave
+    # the same way.
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-30820}:8010"
+
+    # Load environment variables from .env file
+    env_file:
+      - .env
+
+    environment:
+      PYTHONUNBUFFERED: "1"
+      # Pin OpenMP/MKL thread pools so torch's per-CLIP-inference single-thread
+      # setting (see clip_validation_service._load_clip) isn't fought by a
+      # larger default — prevents oversubscription under concurrent requests.
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+
+    # Named volumes persist across container rebuilds and survive server moves
+    # (when the same volume names exist on the new host).
+    # - ghibli_tmp: generated images (QR locks, stage1, final outputs)
+    # CLIP weights are baked into the image at build time (see Dockerfile), so
+    # no volume is needed for them. The MediaPipe model volume was removed —
+    # MediaPipe is no longer called from the request path.
+    # lock.png is bind-mounted read-only so asset updates take effect without rebuild.
+    volumes:
+      - ghibli_tmp:/app/src/static/tmp
+      - ./src/static/lock.png:/app/src/static/lock.png:ro
+
+    # Memory ceiling: one CLIP model copy is ~1GB RSS once loaded (--workers 1
+    # confirmed above via the Dockerfile CMD, so there is exactly one copy).
+    # Was 2g — a live test (40 real concurrent /v1/ghibli-qr requests,
+    # 2026-07-30) proved this too tight: the kernel OOM-killer killed uvicorn
+    # mid-burst (dmesg: anon-rss ~2.08GB at kill), crashing the whole
+    # container and dropping ~15 in-flight requests with a connection reset.
+    # Concurrent decoded images (before thumbnailing) plus CLIP tensors can
+    # transiently exceed the ~1GB baseline by more than expected under a real
+    # burst. Raised to 4g — trivial given this host has 15GB total / 12GB+
+    # free — and re-confirmed with the IDENTICAL 40-request burst: all 40
+    # completed correctly, container stayed healthy throughout, settled at
+    # ~2GB (well inside the new ceiling).
+    mem_limit: ${MEM_LIMIT:-4g}
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8010/v1/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # 60s start grace covers CLIP preload at startup (weights are baked in,
+      # so this is import + model build time, not a download).
+      start_period: 60s
+
+    # Auto-restart on failure
+    restart: unless-stopped
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - ghibli-net
+
+# Named so other compose projects can join it (external: true on their side) and
+# reach this service as http://ghibli-api:8010 — no published host port involved,
+# which is the same addressing model as a Kubernetes ClusterIP Service.
+networks:
+  ghibli-net:
+    name: ghibli-net
+
+volumes:
+  # Named volume, NOT a bind mount or an anonymous volume: it is owned by Docker
+  # and survives `docker compose down`, `up`, `restart`, and image rebuilds. It is
+  # removed only by an explicit `docker compose down -v` / `docker volume rm`.
+  # This is what keeps generated images (final_*, stage1_*, qrlock_*) across
+  # restarts — see PERSIST_FINAL_IMAGES, which stops final_* being TTL-deleted.
+  ghibli_tmp:

@@ -65,9 +65,10 @@ from src.ghibli_portrait.models.schemas import (
 )
 
 
-def _utc_timestamp() -> str:
-    """Generate ISO 8601 UTC timestamp."""
-    now = datetime.now(timezone.utc)
+def _utc_timestamp(when: Optional[datetime] = None) -> str:
+    """Generate ISO 8601 UTC timestamp. Defaults to now; pass `when` to format a
+    specific instant in the identical format (used for log-entry timestamps)."""
+    now = when or datetime.now(timezone.utc)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 

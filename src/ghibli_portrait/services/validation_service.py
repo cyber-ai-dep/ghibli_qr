@@ -53,7 +53,6 @@ from __future__ import annotations
 import io
 import logging
 import math
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,10 +63,10 @@ from PIL import Image
 
 from src.ghibli_portrait.config import Settings
 from src.ghibli_portrait.models.schemas import ErrorType, ErrorStage
+from src.ghibli_portrait.services.clip_validation_service import validate_human_portrait
 
 # MediaPipe Tasks API imports
 try:
-    from mediapipe.tasks.python import vision
     from mediapipe.tasks.python.vision import FaceDetector, FaceDetectorOptions
     from mediapipe.tasks.python.core.base_options import BaseOptions
     import mediapipe as mp
@@ -80,8 +79,7 @@ _MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaz
 _MODEL_CACHE_DIR = Path(__file__).parent.parent / "models"
 _MODEL_PATH = _MODEL_CACHE_DIR / "blaze_face_short_range.tflite"
 
-# Internal validation logger (not exposed to API)
-_validation_logger = logging.getLogger("validation_internal")
+_validation_logger = logging.getLogger(__name__)
 
 # Regex patterns for URL validation
 _LOCALHOST_RE = re.compile(
@@ -92,6 +90,13 @@ _PRIVATE_IP_RE = re.compile(
     r"^(https?://)?(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)",
     re.IGNORECASE
 )
+
+# Module-level Settings singleton — avoids constructing per request.
+_settings = Settings()
+
+# Module-level FaceDetector singleton — avoids ~0.5-1s re-instantiation per call.
+# Lazy: initialized on first use via _get_face_detector().
+_face_detector: Optional["FaceDetector"] = None
 
 
 # ============================================================================
@@ -125,15 +130,6 @@ class ValidationResultV1:
     stage: ErrorStage = ErrorStage.INPUT
 
 
-@dataclass
-class ImageDecodeResult:
-    """Result of image download and decode operation."""
-    ok: bool
-    image: Optional[Image.Image] = None
-    code: Optional[str] = None
-    message: str = ""
-
-
 # ============================================================================
 # LAYER 1: IMAGE SOURCE RESOLUTION
 # ============================================================================
@@ -142,16 +138,7 @@ def validate_public_url(url: str) -> ValidationResult:
     """
     Layer 1: Validate that URL is a publicly accessible HTTP/HTTPS URL.
 
-    This layer does NOT:
-    - Download the image
-    - Decode the image
-    - Perform any content validation
-
-    Args:
-        url: URL string to validate
-
-    Returns:
-        ValidationResult with ok status and reason
+    This layer does NOT download, decode, or perform any content validation.
     """
     if not url or not isinstance(url, str):
         return ValidationResult(False, "URL must be a non-empty string")
@@ -177,17 +164,7 @@ def validate_public_url(url: str) -> ValidationResult:
 
 
 def validate_source_resolution(url: str) -> ValidationResultV1:
-    """
-    Layer 1: Image source resolution for V1 API.
-
-    Validates URL is publicly accessible without downloading.
-
-    Args:
-        url: URL string to validate
-
-    Returns:
-        ValidationResultV1 with structured error info
-    """
+    """Layer 1: Image source resolution for V1 API."""
     result = validate_public_url(url)
     if not result.ok:
         return ValidationResultV1(
@@ -201,77 +178,11 @@ def validate_source_resolution(url: str) -> ValidationResultV1:
 
 
 # ============================================================================
-# LAYER 2: ACCESSIBILITY & DECODE
-# ============================================================================
-
-def _download_image(url: str, timeout_s: int = 10) -> Image.Image:
-    """
-    Download and decode an image from URL.
-
-    Internal helper - raises exceptions on failure.
-
-    Args:
-        url: Image URL
-        timeout_s: Download timeout in seconds
-
-    Returns:
-        PIL Image in RGB format
-
-    Raises:
-        requests.RequestException: Download failed
-        PIL.UnidentifiedImageError: Image decode failed
-    """
-    headers = {"User-Agent": "ghibli-qr/0.1"}
-    response = requests.get(url, timeout=timeout_s, headers=headers)
-    response.raise_for_status()
-
-    return Image.open(io.BytesIO(response.content)).convert("RGB")
-
-
-def validate_image_accessibility(url: str, timeout_s: int = 10) -> ImageDecodeResult:
-    """
-    Layer 2: Download and decode image to verify accessibility.
-
-    This layer does NOT:
-    - Perform face detection
-    - Perform human validation
-    - Make any content-based decisions
-
-    Args:
-        url: Image URL to download
-        timeout_s: Download timeout
-
-    Returns:
-        ImageDecodeResult with decoded image or error
-    """
-    try:
-        img = _download_image(url, timeout_s)
-        return ImageDecodeResult(ok=True, image=img)
-    except requests.RequestException as e:
-        return ImageDecodeResult(
-            ok=False,
-            code="IMAGE_DOWNLOAD_FAILED",
-            message=f"Failed to download image: {e}"
-        )
-    except Exception as e:
-        return ImageDecodeResult(
-            ok=False,
-            code="IMAGE_DECODE_FAILED",
-            message=f"Failed to decode image: {e}"
-        )
-
-
-# ============================================================================
 # LAYER 3A: STAGE 1 VALIDATION (Ghibli / qwen)
 # ============================================================================
 
 def _ensure_model_downloaded() -> Optional[str]:
-    """
-    Ensure the MediaPipe face detection model is downloaded and cached.
-
-    Returns:
-        Path to the model file, or None if download failed.
-    """
+    """Ensure the MediaPipe face detection model is downloaded and cached."""
     if _MODEL_PATH.exists():
         return str(_MODEL_PATH)
 
@@ -285,6 +196,23 @@ def _ensure_model_downloaded() -> Optional[str]:
     except Exception as e:
         _validation_logger.error(f"Failed to download MediaPipe model: {e}")
         return None
+
+
+def _get_face_detector() -> Optional["FaceDetector"]:
+    """Return the module-level FaceDetector singleton, initializing it on first call."""
+    global _face_detector
+    if not _MEDIAPIPE_AVAILABLE:
+        return None
+    model_path = _ensure_model_downloaded()
+    if not model_path:
+        return None
+    if _face_detector is None:
+        options = FaceDetectorOptions(
+            base_options=BaseOptions(model_asset_path=model_path),
+            min_detection_confidence=0.35,
+        )
+        _face_detector = FaceDetector.create_from_options(options)
+    return _face_detector
 
 
 @dataclass
@@ -305,28 +233,17 @@ def _detect_faces(img: Image.Image) -> FaceDetectionResult:
     """
     Detect faces in image using MediaPipe Tasks API (CPU-only).
 
-    Returns:
-        FaceDetectionResult with detection info or error state.
-
     Primary face selection priority:
         1. Largest bounding box area
         2. Highest confidence
         3. Closest to image center
     """
-    # Check MediaPipe availability
     if not _MEDIAPIPE_AVAILABLE:
-        return FaceDetectionResult(
-            ok=False,
-            error="MediaPipe is not available"
-        )
+        return FaceDetectionResult(ok=False, error="MediaPipe is not available")
 
-    # Ensure model is downloaded
-    model_path = _ensure_model_downloaded()
-    if not model_path:
-        return FaceDetectionResult(
-            ok=False,
-            error="Failed to load face detection model"
-        )
+    detector = _get_face_detector()
+    if detector is None:
+        return FaceDetectionResult(ok=False, error="Failed to load face detection model")
 
     try:
         import numpy as np
@@ -339,46 +256,28 @@ def _detect_faces(img: Image.Image) -> FaceDetectionResult:
         if height == 0 or width == 0:
             return FaceDetectionResult(ok=True, face_count=0)
 
-        # Create MediaPipe Image from numpy array
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np_img)
-
-        # Configure and run face detector
-        base_options = BaseOptions(model_asset_path=model_path)
-        options = FaceDetectorOptions(
-            base_options=base_options,
-            min_detection_confidence=0.35
-        )
-
-        with FaceDetector.create_from_options(options) as detector:
-            detection_result = detector.detect(mp_image)
+        detection_result = detector.detect(mp_image)
 
         detections = detection_result.detections or []
         if not detections:
             return FaceDetectionResult(ok=True, face_count=0)
 
         img_area = float(height * width)
-        center_norm = math.sqrt(2) / 2  # max possible normalized center distance
 
         faces_info: List[Dict] = []
         for det in detections:
-            # Get confidence score
             score = det.categories[0].score if det.categories else 0.0
-
-            # Get bounding box (in pixels)
             bbox = det.bounding_box
             x = max(0, bbox.origin_x)
             y = max(0, bbox.origin_y)
             w = max(1, bbox.width)
             h = max(1, bbox.height)
-
             area = float(w * h)
             area_ratio = area / img_area if img_area > 0 else 0.0
-
-            # Calculate center distance (normalized)
             cx = (x + (w / 2)) / width
             cy = (y + (h / 2)) / height
             center_distance = math.sqrt((cx - 0.5) ** 2 + (cy - 0.5) ** 2)
-
             faces_info.append({
                 "bbox": (x, y, w, h),
                 "score": score,
@@ -387,108 +286,109 @@ def _detect_faces(img: Image.Image) -> FaceDetectionResult:
                 "center_distance": center_distance,
             })
 
-        # Sort by primary face selection priority:
-        # 1. Largest area, 2. Highest confidence, 3. Closest to center
-        faces_info.sort(
-            key=lambda f: (-f["area"], -f["score"], f["center_distance"])
-        )
-
-        face_count = len(faces_info)
-        primary_area_ratio = faces_info[0]["area_ratio"] if faces_info else 0.0
+        faces_info.sort(key=lambda f: (-f["area"], -f["score"], f["center_distance"]))
 
         return FaceDetectionResult(
             ok=True,
-            face_count=face_count,
-            primary_face_area_ratio=primary_area_ratio,
-            faces=faces_info
+            face_count=len(faces_info),
+            primary_face_area_ratio=faces_info[0]["area_ratio"] if faces_info else 0.0,
+            faces=faces_info,
         )
 
     except Exception as e:
         _validation_logger.error(f"Face detection failed: {e}")
-        return FaceDetectionResult(
-            ok=False,
-            error=f"Face detection runtime error: {e}"
-        )
+        return FaceDetectionResult(ok=False, error=f"Face detection runtime error: {e}")
 
 
-def _compute_human_score(
-    face_detected: bool,
-    face_count: int,
-    face_area_ratio: float,
-    dominant_face_ratio: float
-) -> float:
+def _is_synthetic_face(img: Image.Image, bbox: tuple) -> bool:
     """
-    Compute humanScore to distinguish humans from animals/cartoons.
+    Returns True if the face region appears to be a synthetic render, 3D game character,
+    or cartoon — not a real human photograph (including B&W photos).
 
-    Args:
-        face_detected: Whether a face was detected
-        face_count: Number of faces detected
-        face_area_ratio: Ratio of largest face area to image area
-        dominant_face_ratio: Ratio of largest face to total face area
+    Four rules — any one can reject:
 
-    Returns:
-        Score between 0.0 (not human) and 1.0 (definitely human)
+    Rule A — flat-color pixel art (simple cartoons, 8-bit sprites):
+        diversity < 0.05  AND  uniformity > 0.25
+
+    Rule B — extreme uniformity (Minecraft pixel art, classic sprites):
+        diversity < 0.20  AND  uniformity > 0.60
+        Real photos — including smooth studio shots and beauty-filtered portraits —
+        never reach uniformity > 0.60 regardless of skin tone.
+
+    Rule C — high color dominance (3D rendered game faces, CGI):
+        diversity < 0.10  AND  max_color_freq > 0.08  AND  skin_ratio < 0.08
+        Rendered faces have large flat-color blocks where one exact RGB value
+        covers >8% of pixels. The YCbCr skin-pixel guard (skin_ratio) makes
+        this rule skin-tone neutral: real dark skin and pale skin both contain
+        enough skin-range pixels to pass (skin_ratio >= 0.08). Synthetic renders
+        and cartoons with artificial palettes do not.
+
+    Rule D — safety net for extreme renders:
+        diversity < 0.10  AND  uniformity > 0.55
     """
-    score = 0.5  # Neutral baseline
-
-    if face_detected and face_count >= 1:
-        score += 0.25
-
-        if dominant_face_ratio > 0.8:
-            score += 0.15
-        elif dominant_face_ratio > 0.6:
-            score += 0.10
-    else:
-        score += 0.05
-
-    if face_area_ratio > 0.08:
-        score += 0.20
-    elif face_area_ratio > 0.05:
-        score += 0.15
-    elif face_area_ratio > 0.03:
-        score += 0.10
-
-    return min(1.0, max(0.0, score))
-
-
-def _compute_realism_score(img: Image.Image) -> float:
-    """
-    Compute realismScore to distinguish real photos from illustrations.
-
-    Args:
-        img: PIL Image in RGB format
-
-    Returns:
-        Score between 0.0 (illustration) and 1.0 (real photo)
-    """
-    import numpy as np
-
-    score = 0.6  # Baseline - assume real unless proven otherwise
-
-    np_img = np.array(img)
-    if np_img.size > 0:
-        color_std = np.std(np_img)
-        if color_std > 35:
-            score += 0.25
-        elif color_std > 20:
-            score += 0.15
-        elif color_std < 12:
-            score -= 0.30
-
     try:
-        import cv2
-        gray = cv2.cvtColor(np_img, cv2.COLOR_RGB2GRAY)
-        edges = cv2.Canny(gray, 50, 150)
-        edge_density = np.sum(edges > 0) / edges.size
+        import numpy as np
 
-        if edge_density < 0.08:
-            score += 0.15
-        elif edge_density > 0.18:
-            score -= 0.20
+        x, y, w, h = bbox
+        margin = int(min(w, h) * 0.2)
+        img_w, img_h = img.size
+        x1 = max(0, x - margin)
+        y1 = max(0, y - margin)
+        x2 = min(img_w, x + w + margin)
+        y2 = min(img_h, y + h + margin)
+
+        region = img.crop((x1, y1, x2, y2)).convert("RGB")
+        arr = np.array(region)
+        h_px, w_px = arr.shape[:2]
+        total = h_px * w_px
+
+        if total < 400:
+            return False
+
+        # Signal 1: unique RGB triplets as fraction of total pixels
+        unique_colors, counts = np.unique(arr.reshape(-1, 3), axis=0, return_counts=True)
+        diversity = len(unique_colors) / total
+
+        # Signal 2: fraction of adjacent pixel pairs with identical RGB
+        h_same = np.mean(np.all(arr[:, :-1] == arr[:, 1:], axis=2))
+        v_same = np.mean(np.all(arr[:-1, :] == arr[1:, :], axis=2))
+        uniformity = (h_same + v_same) / 2
+
+        # Signal 3: fraction of pixels occupied by the single most common color
+        max_color_freq = counts.max() / total
+
+        # Rule A: flat-color pixel art
+        if diversity < 0.05 and uniformity > 0.25:
+            return True
+
+        # Rule B: Minecraft pixel art / extreme uniformity
+        if diversity < 0.20 and uniformity > 0.60:
+            return True
+
+        # Rule C: 3D rendered game face / high color dominance.
+        # Skin-tone guard: if YCbCr skin pixels cover >= 8% of the crop the region
+        # contains real human skin and must not be flagged as synthetic. This guard
+        # is skin-tone neutral — very dark skin and very pale skin both satisfy it.
+        if diversity < 0.10 and max_color_freq > 0.08:
+            ycbcr = np.array(region.convert("YCbCr")).astype(np.int16)
+            Y_ch  = ycbcr[:, :, 0]
+            Cb_ch = ycbcr[:, :, 1]
+            Cr_ch = ycbcr[:, :, 2]
+            skin_mask = (
+                (Y_ch > 40) & (Cb_ch >= 77) & (Cb_ch <= 130) & (Cr_ch >= 130) & (Cr_ch <= 175)
+            )
+            skin_ratio = skin_mask.sum() / total
+            if skin_ratio < 0.08:
+                return True
+
+        # Rule D: safety net for extreme renders
+        if diversity < 0.10 and uniformity > 0.55:
+            return True
+
+        return False
+
     except Exception:
-        pass
-
-    return min(1.0, max(0.0, score))
+        return False
 
 
 def validate_stage1_human_portrait(
@@ -499,34 +399,28 @@ def validate_stage1_human_portrait(
     """
     Layer 3A: Stage 1 (Ghibli) human portrait validation.
 
-    MediaPipe-only face detection with strict rules:
-    - If MediaPipe detects a face → image is treated as human (no further rejection)
-    - Multiple faces rejected only when secondary is visually significant
-    - Animal/cartoon rejection only when ZERO faces detected
-    - Detector failure returns SYSTEM_ERROR, not validation error
+    CLIP zero-shot classification (see clip_validation_service.py): a single
+    semantic call decides human / cartoon / animal / render / multiple-people /
+    no-human. MediaPipe face detection and the pixel-statistics synthetic-image
+    check are no longer called here (both stay defined above, unreferenced,
+    for tests and possible future use) — CLIP's "multiple people" label now
+    covers what the MediaPipe area-ratio multi-face gate used to.
 
-    Args:
-        img: Pre-decoded PIL Image (from Layer 2)
-        image_url: Original URL for logging
-        settings: Optional Settings instance
-
-    Returns:
-        ValidationResultV1 with structured error info
+    Fail-closed: a CLIP runtime failure is mapped to the same
+    FACE_DETECTOR_FAILURE / SYSTEM_ERROR contract the old detector-failure
+    path used, so the external API contract is unchanged.
     """
-    s = settings or Settings()
+    s = settings or _settings
 
-    # If validation is disabled, pass through
     if not s.REQUIRE_HUMAN_FACE:
         return ValidationResultV1(ok=True, stage=ErrorStage.STAGE1_GHIBLI)
 
-    # Run MediaPipe face detection
-    detection = _detect_faces(img)
+    clip_result = validate_human_portrait(img, image_url)
 
-    # Handle detector failure as SYSTEM_ERROR (not validation error)
-    if not detection.ok:
+    if clip_result.code == "CLIP_CLASSIFIER_FAILURE":
         _validation_logger.error({
             "url": image_url,
-            "error": detection.error,
+            "error": clip_result.error,
             "decision": "SYSTEM_ERROR",
             "reason": "FACE_DETECTOR_FAILURE"
         })
@@ -538,71 +432,13 @@ def validate_stage1_human_portrait(
             stage=ErrorStage.STAGE1_GHIBLI
         )
 
-    face_count = detection.face_count
-    faces = detection.faces
-    face_detected = face_count > 0
-
-    # =========================================================================
-    # RULE: If MediaPipe detected at least one face, treat as REAL HUMAN
-    # No animal/cartoon/realism checks apply after this point
-    # =========================================================================
-    if face_detected:
-        primary = faces[0]
-
-        # Check for multiple prominent faces
-        # Reject ONLY if secondary face is visually significant:
-        # - area ≥ 65% of primary face area
-        # - confidence ≥ 60% of primary face confidence
-        if face_count > 1:
-            secondary = faces[1]
-            primary_area = primary.get("area", 1.0)
-            secondary_area = secondary.get("area", 0.0)
-            primary_score = primary.get("score", 1.0)
-            secondary_score = secondary.get("score", 0.0)
-
-            area_ratio = secondary_area / primary_area if primary_area > 0 else 0.0
-            confidence_ratio = secondary_score / primary_score if primary_score > 0 else 0.0
-
-            if area_ratio >= 0.65 and confidence_ratio >= 0.60:
-                _validation_logger.info({
-                    "url": image_url,
-                    "faceCount": face_count,
-                    "secondaryAreaRatio": area_ratio,
-                    "secondaryConfidenceRatio": confidence_ratio,
-                    "decision": "REJECT",
-                    "reason": "MULTIPLE_PROMINENT_FACES"
-                })
-                return ValidationResultV1(
-                    ok=False,
-                    code="MULTIPLE_FACES",
-                    message="Multiple prominent human faces detected. Please provide a single-person portrait.",
-                    error_type=ErrorType.VALIDATION_ERROR,
-                    stage=ErrorStage.STAGE1_GHIBLI
-                )
-
-        # Face detected → ACCEPT (face size is NOT a rejection criterion)
-        # Cropping and framing are handled in Stage 2, not Stage 1
-        _validation_logger.info({
-            "url": image_url,
-            "faceCount": face_count,
-            "decision": "ACCEPT"
-        })
+    if clip_result.ok:
         return ValidationResultV1(ok=True, stage=ErrorStage.STAGE1_GHIBLI)
 
-    # =========================================================================
-    # NO FACE DETECTED: Reject as non-human (animal/cartoon/illustration)
-    # MediaPipe is the single source of truth - zero faces = non-human
-    # =========================================================================
-    _validation_logger.info({
-        "url": image_url,
-        "faceCount": 0,
-        "decision": "REJECT",
-        "reason": "NO_FACE_DETECTED"
-    })
     return ValidationResultV1(
         ok=False,
-        code="NO_FACE_DETECTED",
-        message="No human face detected. Please provide a clear portrait photo of a person.",
+        code=clip_result.code,
+        message=clip_result.message,
         error_type=ErrorType.VALIDATION_ERROR,
         stage=ErrorStage.STAGE1_GHIBLI
     )
@@ -616,22 +452,7 @@ def validate_stage2_input(stage1_output_url: str) -> ValidationResultV1:
     """
     Layer 3B: Stage 2 (QR/seedream) input validation.
 
-    CRITICAL: Stage 1 output is TRUSTED.
-
-    This layer does NOT:
-    - Download the Stage 1 output
-    - Decode the Stage 1 output
-    - Perform face detection
-    - Perform human validation
-    - Reprocess the image in any way
-
-    Only performs minimal sanity check that URL is non-empty.
-
-    Args:
-        stage1_output_url: URL from Stage 1 result (TRUSTED)
-
-    Returns:
-        ValidationResultV1 (always passes for valid URLs)
+    CRITICAL: Stage 1 output is TRUSTED. Only checks that URL is non-empty.
     """
     if not stage1_output_url or not isinstance(stage1_output_url, str):
         return ValidationResultV1(
@@ -641,9 +462,57 @@ def validate_stage2_input(stage1_output_url: str) -> ValidationResultV1:
             error_type=ErrorType.SYSTEM_ERROR,
             stage=ErrorStage.STAGE2_QR
         )
-
-    # Stage 1 output is TRUSTED - no further validation
     return ValidationResultV1(ok=True, stage=ErrorStage.STAGE2_QR)
+
+
+# ============================================================================
+# SKIN COLOR EXTRACTION
+# ============================================================================
+
+def extract_skin_color_hex(img: Image.Image) -> Optional[str]:
+    """
+    Extract the dominant skin color from an image using YCbCr-based skin detection.
+
+    Returns a hex string like '#8B4513' representing the median skin pixel color,
+    or None if too few skin pixels are found.
+
+    Covers the full human skin tone spectrum — from very dark to very light skin.
+    Works on both color and B&W photos (B&W returns None — no color to extract).
+    Always call via asyncio.to_thread() from async contexts.
+    """
+    try:
+        import numpy as np
+
+        # Downscale for speed — color statistics don't need full resolution.
+        thumb = img.convert("RGB")
+        if max(thumb.size) > 512:
+            thumb.thumbnail((512, 512), Image.LANCZOS)
+
+        arr = np.array(thumb)
+        ycbcr = np.array(thumb.convert("YCbCr"))
+        Y  = ycbcr[:, :, 0].astype(np.int16)
+        Cb = ycbcr[:, :, 1].astype(np.int16)
+        Cr = ycbcr[:, :, 2].astype(np.int16)
+
+        # Established YCbCr skin range — validated across dark, medium, and light tones.
+        # Y > 40 catches very dark skin (avoids clipping deep brown/black tones).
+        skin_mask = (Y > 40) & (Cb >= 77) & (Cb <= 130) & (Cr >= 130) & (Cr <= 175)
+
+        if skin_mask.sum() < 200:
+            return None
+
+        skin_pixels = arr[skin_mask]
+        r = int(np.median(skin_pixels[:, 0]))
+        g = int(np.median(skin_pixels[:, 1]))
+        b = int(np.median(skin_pixels[:, 2]))
+
+        return f"#{r:02X}{g:02X}{b:02X}"
+
+    except Exception as exc:
+        # Without this the response silently carries skinColor: null and the
+        # skin-tone prompt injection is skipped, with no trace of why.
+        _validation_logger.warning("Skin color extraction failed — %s", exc)
+        return None
 
 
 # ============================================================================
@@ -651,15 +520,7 @@ def validate_stage2_input(stage1_output_url: str) -> ValidationResultV1:
 # ============================================================================
 
 def validate_single_image_url_list(img_urls: list[str]) -> ValidationResult:
-    """
-    Legacy helper: Validate that exactly one image URL is provided.
-
-    Args:
-        img_urls: List of image URLs
-
-    Returns:
-        ValidationResult with ok status and reason
-    """
+    """Validate that exactly one image URL is provided."""
     if not isinstance(img_urls, list) or len(img_urls) != 1:
         return ValidationResult(
             False,
@@ -668,96 +529,69 @@ def validate_single_image_url_list(img_urls: list[str]) -> ValidationResult:
     return ValidationResult(True)
 
 
-def validate_real_human_image(
+async def validate_real_human_image_async(
     image_url: str,
     *,
-    settings: Optional[Settings] = None
-) -> ValidationResultV1:
+    settings: Optional[Settings] = None,
+    clip_sem=None,
+    download_sem=None,
+) -> tuple[ValidationResultV1, Optional[Image.Image]]:
     """
-    Comprehensive validation for user-provided images (Stage 1 input).
+    Async validation for user-provided images (Layers 1, 2, 3A).
 
-    Executes Layers 1, 2, and 3A in sequence:
-    - Layer 1: Source resolution (URL validation)
-    - Layer 2: Accessibility & decode (download and decode)
-    - Layer 3A: Human portrait validation (face/human checks)
+    Returns (ValidationResultV1, source_img):
+    - source_img is the decoded PIL Image when validation passes (ok=True).
+    - source_img is None when validation fails early (Layer 1 or download error).
 
-    Args:
-        image_url: User-provided image URL
-        settings: Optional Settings instance
+    The caller can reuse source_img (e.g. for skin-tone extraction) to avoid
+    downloading the same URL a second time.
 
-    Returns:
-        ValidationResultV1 with structured error info
+    Downloads the image with httpx (non-blocking), then runs CLIP
+    classification in a thread (CPU-bound). download_sem caps concurrent
+    outbound downloads (I/O-bound — a safety cap against an accidental burst,
+    not CPU pressure); clip_sem caps concurrent CPU usage separately.
     """
-    s = settings or Settings()
+    import asyncio
+    import httpx
 
-    # Layer 1: Source resolution
+    s = settings or _settings
+
+    # Layer 1: Source resolution (instant, no I/O)
     source_result = validate_source_resolution(image_url)
     if not source_result.ok:
-        return source_result
+        return source_result, None
 
-    # Layer 2: Accessibility & decode
-    decode_result = validate_image_accessibility(image_url)
-    if not decode_result.ok:
-        return ValidationResultV1(
-            ok=False,
-            code=decode_result.code,
-            message=decode_result.message,
-            error_type=ErrorType.VALIDATION_ERROR,
-            stage=ErrorStage.SOURCE_RESOLUTION
-        )
-
-    # Layer 3A: Stage 1 human portrait validation
-    return validate_stage1_human_portrait(decode_result.image, image_url, settings=s)
-
-
-def validate_human_face(url: str, *, settings: Optional[Settings] = None) -> ValidationResult:
-    """
-    Legacy validation function for backward compatibility.
-
-    Uses MediaPipe Tasks API for face detection (CPU-only).
-
-    Args:
-        url: Image URL
-        settings: Optional Settings instance
-
-    Returns:
-        ValidationResult with ok status, reason, and face count
-    """
-    s = settings or Settings()
-
-    if not s.REQUIRE_HUMAN_FACE:
-        return ValidationResult(True)
+    # Layer 2: Download async — capped by download_sem to prevent an unbounded
+    # burst of simultaneous outbound connections (see DOWNLOAD_CONCURRENCY_LIMIT).
+    async def _download() -> Image.Image:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(image_url, headers={"User-Agent": "ghibli-qr/0.1"})
+            resp.raise_for_status()
+        return Image.open(io.BytesIO(resp.content)).convert("RGB")
 
     try:
-        img = _download_image(url)
+        if download_sem:
+            async with download_sem:
+                img = await _download()
+        else:
+            img = await _download()
     except Exception as e:
-        return ValidationResult(False, f"Failed to download or decode image: {e}")
-
-    detection = _detect_faces(img)
-
-    # Handle detector failure
-    if not detection.ok:
-        return ValidationResult(
-            False,
-            f"Face detection failed: {detection.error}",
-            faces=0
+        _validation_logger.warning(
+            "Image download failed — code=IMAGE_DOWNLOAD_FAILED url=%s err=%s", image_url, e
         )
+        return ValidationResultV1(
+            ok=False,
+            code="IMAGE_DOWNLOAD_FAILED",
+            message=f"Failed to download image: {e}",
+            error_type=ErrorType.VALIDATION_ERROR,
+            stage=ErrorStage.SOURCE_RESOLUTION,
+        ), None
 
-    face_count = detection.face_count
+    # Layer 3A: CLIP classification — CPU-bound. Semaphore applied here only.
+    if clip_sem:
+        async with clip_sem:
+            result = await asyncio.to_thread(validate_stage1_human_portrait, img, image_url, s)
+    else:
+        result = await asyncio.to_thread(validate_stage1_human_portrait, img, image_url, s)
 
-    if face_count == 0:
-        return ValidationResult(
-            False,
-            "No human face detected. Please provide a clear portrait image.",
-            faces=0
-        )
-
-    if s.MAX_FACES and face_count > s.MAX_FACES:
-        return ValidationResult(
-            False,
-            f"Too many faces detected ({face_count}). Please provide a single-person portrait.",
-            faces=face_count
-        )
-
-    # Face detected → ACCEPT (face size is NOT a rejection criterion)
-    return ValidationResult(True, faces=face_count)
+    return result, img

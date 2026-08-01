@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ghibli-api-config
+data:
+  LOG_LEVEL: "INFO"
+  GHIBLI_MODEL: "seedream-4-5-251128"
+  COMPOSE_MODEL: "seedream-4-5-251128"
+  REQUIRE_HUMAN_FACE: "true"
+  SHORT_CODE_LENGTH: "8"
+  ENABLE_IDENTITY_CHECK: "false"
+  CLIP_CONCURRENCY_LIMIT: "4"
+  DOWNLOAD_CONCURRENCY_LIMIT: "24"
+  GENERATION_CONCURRENCY_LIMIT: "24"
+  SAVE_OUTPUT_LOCAL: "false"
+  STAGE1_TTL_HOURS: "2"
+  QRLOCK_TTL_HOURS: "2"
+  FINAL_IMAGE_TTL_HOURS: "24"
+  PERSIST_FINAL_IMAGES: "true"
+  # Diagnostics API (/v1/diagnostics) — always registered; access is controlled
+  # solely by DIAGNOSTICS_TOKEN, which lives in the Secret, not here. Without that
+  # token every diagnostics request is rejected with 401.
+  DIAG_LOG_BUFFER_SIZE: "2000"
+  DIAG_REDACT_URLS: "query"
+  # Reported in the diagnostics snapshot so prod is distinguishable from staging.
+  ENVIRONMENT: "production"
+  # DOMAIN must be the externally reachable address for this Service/Ingress —
+  # set per environment (dev/staging/prod), not baked in here.
+  DOMAIN: "<set-per-environment>"
+  # See main.py's access-control middleware. Default fully open; flip to
+  # "true" + set ALLOWED_IPS per environment to restrict non-/v1/health routes.
+  PRIVATE_MODE: "false"
+  ALLOWED_IPS: ""
+  # Safety net against runaway ARK cost — see main.py's rate-limit middleware.
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_MAX_REQUESTS: "60"
+  RATE_LIMIT_WINDOW_SECONDS: "60"

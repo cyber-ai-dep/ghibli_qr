@@ -1,298 +1,139 @@
 # Ghibli Portrait API V1
 
-Production-ready API for transforming portraits into Ghibli-style art with QR code generation. Built with FastAPI, unified response format, multi-layer validation, and identity-preserving style transfer.
+Production API that turns a real portrait photo into a Studio Ghibli–style
+illustration and composes it with a scannable QR-code lock image. Built with
+FastAPI, fully async I/O, multi-layer validation, and **BytePlus ARK (Seedream)**
+for image generation.
 
 ## What It Does
 
-Transforms real portrait photos into hand-drawn Studio Ghibli-style illustrations and generates QR codes embedded in a lock-screen overlay. Features an automated two-stage async pipeline with webhook-based task handling.
+Two-stage pipeline:
+1. **Stage 1** — portrait → Ghibli-style illustration.
+2. **Stage 2** — Ghibli illustration + QR-lock → final "person holding the QR" image.
 
-## What's New (Latest Release)
-
-### Identity-Preserving Style Transfer
-The Stage 1 prompt system has been completely overhauled to enforce strict identity fidelity during Ghibli transformation:
-
-- **Strict style-transfer prompt** — explicitly instructs the model to preserve exact skin tone, ethnicity, facial geometry, hair, clothing, pose, background, and composition. Only the artistic rendering style may change.
-- **Negative prompt support** — a separate negative prompt is passed to models that support it, explicitly forbidding generic anime faces, identity drift, skin tone changes, and facial simplification.
-- **Model fidelity controls** — `image_strength`, `denoise`, `fidelity`, `reference_strength`, `preserve_identity`, and `preserve_face` parameters are injected into Stage 1 API calls for models that support them.
-- **Qwen generation quality tuning** — `guidance_scale` (default `3.0`) and `num_inference_steps` (default `30`) are now configurable via environment variables, giving finer control over how strongly the model follows the style prompt vs. preserving the source.
-
-### Post-Generation Identity Drift Detection
-A heuristic identity check runs after Stage 1 output is downloaded:
-
-- Detects **face absence** in the output (full identity replacement)
-- Detects **face area drift** > 30% (extreme recomposition)
-- Detects **skin-tone hue shift** > 40° in the face region (catches ethnicity / skin-tone changes)
-- On drift detection, **automatically retries Stage 1 once** before rejecting
-- Controlled by `ENABLE_IDENTITY_CHECK` env var (default `false` — enable once a high-fidelity model is configured)
-
-### Flux Kontext Model Support
-Full support for `flux-kontext-pro` / `flux-kontext-max` has been added to the generation layer:
-
-- Correct flat-under-`input` payload structure (`inputImage`, `aspectRatio`, `outputFormat`, `safetyTolerance`)
-- Flux Kontext callback result format (`info.resultImageUrl`) is handled alongside the standard `resultUrls` format
-- Set `KIE_GHIBLI_MODEL=flux-kontext-pro` in `.env` to activate — provides significantly better identity preservation than `qwen/image-edit`
-
-### Stage 2 Download Timeout Fix
-Resolved KIE Stage 2 (Seedream) timing out when downloading input images:
-
-- **Stage 1 output re-hosted locally** — the Qwen CDN URL (`tempfile.aiquickdraw.com`) is temporary and often unreachable cross-service. Stage 1 output is now downloaded immediately, resized to max 1024px, saved as JPEG (~200–400 KB), and served from the local server.
-- **QR lock image resized to JPEG** — the original 2304×1728 PNG lock file (~2.6 MB) was timing out mid-transfer over the tunnel. It is now resized to max 1024px and saved as JPEG (~117 KB) before being passed to Stage 2.
-
-### QR Proportional Sizing
-Hardcoded pixel values for QR placement have been replaced with aspect-ratio-aware ratios:
-
-- `QR_LOCK_TARGET_WIDTH_RATIO = 0.28` — QR targets 28% of lock image width
-- `QR_LOCK_MIN_WIDTH_RATIO = 0.22` / `QR_LOCK_MAX_WIDTH_RATIO = 0.32` — clamped range
-- QR is centered horizontally and placed at ~46% down (lower-torso/hand area) with a 2% bottom margin
-- Works correctly with any lock image resolution
-
-### API Contract & Swagger Fixes
-- All route decorators now carry `response_model=ApiSuccessResponse` and `responses={422, 500, 504}` — Swagger shows correct schemas instead of raw strings
-- Global `RequestValidationError` handler converts Pydantic validation errors to the V1 unified envelope (no more FastAPI default `{"detail": [...]}` on 422s)
-- Webhook endpoint now returns proper `success_response` / `external_error_response` instead of a raw Pydantic model
+Generation runs against the **BytePlus ARK Seedream** `images/generations` endpoint,
+which is **synchronous** — the result image URL is returned inline in the HTTP
+response (no webhook/callback, no ngrok required).
 
 ---
 
 ## High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         LAYER 0: Schema Validation                       │
-│                    (Pydantic: field types, required fields)              │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      LAYER 1: Source Resolution                          │
-│            (URL format, reachability, download, content-type)            │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        LAYER 2: Image Decoding                           │
-│                  (PIL decode, format validation, integrity)              │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│              LAYER 3A: Stage 1 Validation (Human Portrait)               │
-│               (MediaPipe BlazeFace: face detection only)                 │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    STAGE 1: Ghibli Transformation                        │
-│        (configurable model — flux-kontext-pro recommended)               │
-│          Strict identity-preserving prompt + fidelity controls           │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│              IDENTITY DRIFT CHECK (optional, post-Stage 1)               │
-│     Face presence · Area stability · Skin-tone hue — auto-retry once    │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│              LAYER 3B: Stage 2 Validation (Input Trust)                  │
-│            (Stage 1 output is TRUSTED — minimal validation)              │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      STAGE 2: QR Composition                             │
-│                      (seedream/4.5-edit model)                           │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    LAYER 4: Orchestration & Response                     │
-│          (Coordinates stages, formats responses, handles errors)         │
-└─────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│  LAYER 0  Schema validation (Pydantic, camelCase surface)    │
+├────────────────────────────────────────────────────────────┤
+│  LAYER 1  Source resolution (URL format, localhost/private   │
+│           IP rejection — no download)                        │
+├────────────────────────────────────────────────────────────┤
+│  LAYER 2  Decode (httpx async download, PIL decode)          │
+├────────────────────────────────────────────────────────────┤
+│  LAYER 3A Stage 1 validation (MediaPipe face detection +     │
+│           synthetic-image check + skin-tone extraction)      │
+├────────────────────────────────────────────────────────────┤
+│  STAGE 1  Portrait → Ghibli   (BytePlus ARK / Seedream)      │
+├────────────────────────────────────────────────────────────┤
+│  IDENTITY DRIFT CHECK (optional, ENABLE_IDENTITY_CHECK)       │
+├────────────────────────────────────────────────────────────┤
+│  LAYER 3B Stage 2 validation (Stage 1 output trusted)        │
+├────────────────────────────────────────────────────────────┤
+│  STAGE 2  Ghibli + QR-lock composition (ARK / Seedream)      │
+├────────────────────────────────────────────────────────────┤
+│  LAYER 4  Orchestration, QR-scannability check, response     │
+└────────────────────────────────────────────────────────────┘
 ```
 
-### Stage Responsibilities
+### Generation model (synchronous)
 
-| Stage | Responsibility | MUST NOT Do |
-|-------|---------------|-------------|
-| **Source Resolution** | Validate URL format, download image bytes | Interpret image content |
-| **Image Decoding** | Decode bytes to PIL Image, validate format | Apply business rules |
-| **Stage 1 (Ghibli)** | Detect human faces, generate Ghibli art | Perform QR operations |
-| **Identity Check** | Verify skin tone / face preserved post-generation | Block on system errors |
-| **Stage 2 (QR)** | Compose Ghibli image with QR lock screen | Re-validate human faces |
-| **Orchestration** | Coordinate stages, format responses | Add new validation rules |
+```
+Client → POST /v1/ghibli-qr
+   → validate → Stage 1 ARK call (inline result URL)
+   → re-host Stage 1 output locally → Stage 2 ARK call (inline result URL)
+   → re-host final image → QR scannability check → response
+```
+
+Internally, the ARK call result is delivered to the orchestrator through an
+in-process Future (`pending_tasks`) — the same contract the old async backend
+used, so the pipeline logic is unchanged. **No public callback URL is needed.**
 
 ---
 
-## Stage 1: Identity-Preserving Style Transfer
+## Concurrency Model
 
-### Model Recommendation
+All network I/O uses **httpx async**. CPU-bound work (MediaPipe, PIL) runs in a
+thread pool. Two semaphores cap load:
 
-| Model | Identity Preservation | Notes |
-|-------|----------------------|-------|
-| `flux-kontext-pro` | **Excellent** | Recommended — built for subject-consistent editing |
-| `flux-kontext-max` | **Excellent** | Higher quality, slower |
-| `qwen/image-edit` | Poor | Legacy fallback — known to drift skin tone and identity |
+| Limit | Env var | Default | Purpose |
+|---|---|---|---|
+| Face detection | `MAX_MEDIAPIPE_CONCURRENCY` | 15 | CPU ceiling for MediaPipe |
+| Generation submissions | `GENERATION_CONCURRENCY_LIMIT` | 8 | Concurrent ARK calls (ARK allows ≤10/model/account) |
 
-Set `KIE_GHIBLI_MODEL` in `.env` to switch models. The code handles both the Qwen and Flux Kontext API payload structures automatically.
+**Single-process limitation**: `pending_tasks` is an in-memory dict — run with
+`--workers 1` (horizontal scaling requires moving it to Redis).
 
-### Prompt Strategy
+---
 
-Stage 1 uses a two-part prompt system:
+## Generation backend
 
-**Positive prompt** — tells the model exactly what to preserve:
-> *"Transform this EXACT input image into Studio Ghibli style. Preserve the exact same person, exact identity, exact face structure, exact skin tone, exact ethnicity, exact race, exact hairstyle, exact facial hair, exact expression, exact clothing, exact pose, exact hands, exact background, exact composition. ONLY change artistic style to hand-drawn Studio Ghibli illustration."*
+- Provider: **BytePlus ARK** — `images/generations` (synchronous REST).
+- Model + settings are configured in `seedream_service.py` via env vars:
+  `ARK_API_KEY`, `ARK_MODEL` (default `seedream-4-5-251128`), `ARK_IMAGE_SIZE`
+  (default `2K`), `ARK_SEED` (default `42`), `ARK_WATERMARK` (default `false`).
+- Both stages send images **inlined as base64 data URIs**, so ARK never fetches
+  from this server (no public hosting needed for generation).
 
-**Negative prompt** (applied when supported by the model):
-> *"generic anime face, identity drift, race change, skin tone change, beautification, face replacement, facial simplification, cartoon redesign, different person, altered ethnicity, altered hairstyle, altered expression"*
+### Prompts
 
-### Fidelity Parameters
-
-The following parameters are injected into every Stage 1 API call (silently ignored if unsupported):
-
-| Parameter | Value | Effect |
-|-----------|-------|--------|
-| `image_strength` | `0.35` | Low = minimal deviation from source |
-| `denoise` | `0.30` | Low denoising preserves original structure |
-| `fidelity` | `0.95` | High fidelity to reference image |
-| `reference_strength` | `0.95` | Maximum reference/guidance strength |
-| `preserve_identity` | `true` | Explicit identity lock |
-| `preserve_face` | `true` | Explicit face lock |
-| `guidance_scale` | `3.0` (Qwen) | Lower = less instruction-following, better identity retention |
-| `num_inference_steps` | `30` (Qwen) | Higher step count for quality |
-
-All configurable via environment variables (`STAGE1_GUIDANCE_SCALE`, `STAGE1_NUM_INFERENCE_STEPS`).
+Stage 1 (`PROMPT_PIC_TO_GHIBLI`) and Stage 2 (`PROMPT_GHIBLI_LOCK`) live in
+`config.py`. The exact skin-tone hex is measured from the input image (YCbCr) and
+injected into the Stage 1 prompt so the model reproduces the real skin color.
 
 ---
 
 ## Stage 1: Human Portrait Validation
 
-### Face Detection Technology
+Uses **MediaPipe BlazeFace** (CPU-only). Model is pre-downloaded at startup to
+`src/ghibli_portrait/models/`.
 
-Stage 1 uses **MediaPipe BlazeFace** (CPU-only) for face detection:
+| Condition | Error Code |
+|---|---|
+| No face detected | `NO_FACE_DETECTED` |
+| More than one prominent face (secondary ≥2% area, conf ≥0.45) | `MULTIPLE_FACES` |
+| Synthetic / 3D render / cartoon (color-diversity + pixel-uniformity) | `NOT_REAL_PHOTO` |
+| Detector runtime error | `FACE_DETECTOR_FAILURE` |
 
-- **Model**: `blaze_face_short_range.tflite` (auto-downloaded on first use)
-- **Runtime**: MediaPipe Tasks API (`mediapipe.tasks.python.vision.FaceDetector`)
-- **Confidence Threshold**: 0.35 minimum detection confidence
-
-### Acceptance Rules
-
-The system accepts **any image containing a human face**, regardless of:
-
-| Attribute | Accepted |
-|-----------|----------|
-| Gender | Male, female, non-binary |
-| Ethnicity | All ethnicities |
-| Facial hair | Beard, mustache, clean-shaven |
-| Head covering | Hijab, turban, hat, no covering |
-| Hairstyle | Any hairstyle, bald |
-| Glasses | With or without |
-| Background | Simple or complex |
-| Face size | Any size (small/distant faces accepted) |
-| Face position | Any position in frame |
-
-### Rejection Rules
-
-| Condition | Error Code | Description |
-|-----------|-----------|-------------|
-| No face detected | `NO_FACE_DETECTED` | MediaPipe found zero faces in the image |
-| Multiple prominent faces | `MULTIPLE_FACES` | Secondary face ≥65% area AND ≥60% confidence of primary |
-| Detector failure | `FACE_DETECTOR_FAILURE` | MediaPipe runtime error (SYSTEM_ERROR) |
-
-### Primary Face Selection
-
-When multiple faces are detected, the **primary face** is selected by:
-1. Largest bounding box area
-2. Highest confidence score
-3. Closest to image center
+Any image with a single detectable real human face is accepted regardless of
+gender, ethnicity, facial hair, head covering, glasses, or background.
 
 ---
 
-## Stage 2: QR Composition
+## Stage 2: Re-hosting + QR Composition
 
-Stage 2 receives the Ghibli-transformed image and composes it with a QR code lock screen.
-
-- **Stage 1 output is trusted** — no face detection or re-validation occurs
-- Both inputs (Ghibli JPEG + QR lock JPEG) are resized to max 1024px before submission to ensure KIE's download completes within its internal timeout window
-- QR lock overlay uses proportional sizing relative to lock image dimensions (not hardcoded pixels)
-
----
-
-## Error Handling
-
-### Error Classification
-
-| Type | Description | Example |
-|------|-------------|---------|
-| `VALIDATION_ERROR` | Input failed validation rules | No face detected, invalid URL |
-| `EXTERNAL_ERROR` | External API failure | KIE API error, timeout, identity drift |
-| `SYSTEM_ERROR` | Internal system failure | Face detector crash |
-| `UNSUPPORTED_CASE` | Valid but unsupported input | Reserved |
-
-### Error Stages
-
-| Stage | Scope |
-|-------|-------|
-| `INPUT` | Schema validation, URL format |
-| `SOURCE_RESOLUTION` | URL reachability, download |
-| `STAGE1_GHIBLI` | Face validation, Ghibli generation, identity check |
-| `STAGE2_QR` | QR composition, re-hosting |
-| `ORCHESTRATION` | Pipeline coordination |
-
----
-
-## API Contract
-
-### Unified Response Envelope
-
-All V1 endpoints return:
-
-**Success**
-```json
-{
-  "success": true,
-  "data": { "resultUrls": ["https://..."], "model": "...", "costTime": 42 },
-  "message": "Ghibli + QR pipeline completed successfully",
-  "errors": null,
-  "timestamp": "2026-05-11T08:00:00.000Z"
-}
-```
-
-**Error**
-```json
-{
-  "success": false,
-  "data": null,
-  "message": "Request validation failed",
-  "errors": [
-    {
-      "code": "NO_FACE_DETECTED",
-      "type": "VALIDATION_ERROR",
-      "stage": "STAGE1_GHIBLI",
-      "field": "imgUrl",
-      "message": "No human face detected. Please provide a clear portrait photo."
-    }
-  ],
-  "timestamp": "2026-05-11T08:00:00.000Z"
-}
-```
+Before/after each stage, generated images are **re-hosted locally** (downloaded,
+saved under `static/tmp/`, served from this server). The QR-lock image is built
+locally with PIL (`qr_service.get_qr`). Optionally, final images are also saved
+to a local `OUTPUT_DIR` (see `SAVE_OUTPUT_LOCAL`).
 
 ---
 
 ## API Endpoints
 
-All endpoints are prefixed with `/v1`
+All endpoints are prefixed with `/v1`.
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/health` | GET | Service health check |
+|---|---|---|
+| `/v1/health` | GET | Liveness/readiness probe |
 | `/v1/ghibli` | POST | Transform portrait to Ghibli style |
-| `/v1/ghibli/callback` | POST | Webhook callback (internal — KIE use only) |
-| `/v1/qr-lock` | POST | Generate QR code with lock screen overlay |
-| `/v1/qr-lock/{imgId}` | DELETE | Delete temporary QR code image |
-| `/v1/qr-url` | GET | Get shortened URL (deterministic hashing) |
-| `/v1/ghibli-qr` | POST | **Primary** — automated Ghibli + QR pipeline |
+| `/v1/qr-lock` | POST | Generate a QR-code lock image |
+| `/v1/qr-lock/{imgId}` | DELETE | Delete a temporary QR image |
+| `/v1/qr-url/` | GET | Deterministic URL shortening |
+| `/v1/ghibli-qr` | POST | **Primary** — full Ghibli + QR pipeline |
 
 ### Primary Endpoint: `POST /v1/ghibli-qr`
 
 **Request:**
 ```json
-{
-  "imgUrl": "https://i.ibb.co/2JKZ4fC/portrait.jpg",
-  "url": "https://your-profile.com"
-}
+{ "imgUrl": "https://example.com/portrait.jpg", "url": "https://your-profile.com" }
 ```
 
 **Response:**
@@ -300,119 +141,131 @@ All endpoints are prefixed with `/v1`
 {
   "success": true,
   "data": {
-    "resultUrls": ["https://..."],
-    "model": "seedream/4.5-edit",
-    "costTime": 45,
+    "resultUrls": ["http://<host>/tmp/final_....jpg"],
+    "model": "seedream",
+    "costTime": 62,
     "quality": "basic",
-    "aspectRatio": "1:1"
+    "aspectRatio": "1:1",
+    "qrValidation": { "ok": true, "expectedPayload": "...", "detectedPayload": "...", "reason": "..." }
   },
   "message": "Ghibli + QR pipeline completed successfully",
   "errors": null,
-  "timestamp": "2026-05-11T08:00:00.000Z"
+  "timestamp": "..."
 }
 ```
-
----
-
-## Installation
-
-### Prerequisites
-- Python 3.10+
-- [uv](https://github.com/astral-sh/uv) package manager
-
-### Setup
-
-```bash
-git clone https://github.com/cyber-ai-dep/ghibli_qr
-cd ghibli_qr
-pip install uv
-uv sync
-cp .env.example .env
-mkdir -p src/ghibli_portrait/static/tmp
-```
-
-Edit `.env`:
-```env
-DOMAIN=https://your-domain.com
-KIE_API_KEY=your_kie_api_key
-
-# Stage 1 — flux-kontext-pro recommended for identity preservation
-KIE_GHIBLI_MODEL=flux-kontext-pro
-
-# Stage 2 — QR composition
-KIE_COMPOSE_MODEL=seedream/4.5-edit
-
-# Validation
-REQUIRE_HUMAN_FACE=true
-MAX_FACES=1
-MIN_FACE_AREA_RATIO=0.03
-SHORT_CODE_LENGTH=8
-
-# Identity drift check (enable once using flux-kontext)
-ENABLE_IDENTITY_CHECK=false
-```
-
-Run:
-```bash
-uvicorn src.ghibli_portrait.main:app --host 0.0.0.0 --port 8010 --reload
-```
-
-### Webhook Setup (local development)
-
-```bash
-ngrok http 8010
-# Copy the HTTPS URL → set as DOMAIN in .env → restart server
-```
-
----
-
-## Configuration Reference
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DOMAIN` | Yes | — | Public URL for webhooks and static file serving |
-| `KIE_API_KEY` | Yes | — | KIE.ai API authentication key |
-| `KIE_GHIBLI_MODEL` | Yes | — | Stage 1 model (`flux-kontext-pro` recommended) |
-| `KIE_COMPOSE_MODEL` | Yes | — | Stage 2 model (`seedream/4.5-edit`) |
-| `REQUIRE_HUMAN_FACE` | No | `true` | Enable face detection gate |
-| `MAX_FACES` | No | `1` | Max prominent faces allowed (0 = unlimited) |
-| `MIN_FACE_AREA_RATIO` | No | `0.03` | Minimum face-to-image area ratio |
-| `SHORT_CODE_LENGTH` | No | `8` | URL shortener code length |
-| `ENABLE_IDENTITY_CHECK` | No | `false` | Post-generation identity drift detection |
-| `STAGE1_GUIDANCE_SCALE` | No | `3.0` | Qwen guidance scale (lower = more identity preservation) |
-| `STAGE1_NUM_INFERENCE_STEPS` | No | `30` | Qwen inference steps |
 
 ---
 
 ## Error Codes Reference
 
 | Code | HTTP | Stage | Description |
-|------|------|-------|-------------|
-| `SINGLE_IMAGE_REQUIRED` | 422 | INPUT | Request must contain exactly one image URL |
-| `INVALID_IMAGE_URL` | 422 | SOURCE_RESOLUTION | URL is not publicly accessible or invalid |
+|---|---|---|---|
+| `SINGLE_IMAGE_REQUIRED` | 422 | INPUT | Exactly one image URL required |
+| `INVALID_IMAGE_URL` | 422 | SOURCE_RESOLUTION | URL not public or malformed |
 | `IMAGE_DOWNLOAD_FAILED` | 422 | SOURCE_RESOLUTION | Failed to download the image |
-| `NO_FACE_DETECTED` | 422 | STAGE1_GHIBLI | No human face found in the image |
-| `MULTIPLE_FACES` | 422 | STAGE1_GHIBLI | Multiple prominent human faces detected |
-| `FACE_DETECTOR_FAILURE` | 500 | STAGE1_GHIBLI | Face detection system unavailable |
-| `STAGE1_API_ERROR` | 500 | STAGE1_GHIBLI | Stage 1 API returned an error |
-| `STAGE1_TASK_FAILED` | 500 | STAGE1_GHIBLI | Stage 1 generation task failed |
-| `STAGE1_TIMEOUT` | 504 | STAGE1_GHIBLI | Stage 1 exceeded 5-minute timeout |
-| `IDENTITY_DRIFT_DETECTED` | 500 | STAGE1_GHIBLI | Stage 1 output failed identity preservation check after retry |
-| `STAGE2_API_ERROR` | 500 | STAGE2_QR | Stage 2 API returned an error |
-| `STAGE2_TASK_FAILED` | 500 | STAGE2_QR | Stage 2 composition task failed |
-| `STAGE2_TIMEOUT` | 504 | STAGE2_QR | Stage 2 exceeded 5-minute timeout |
+| `NO_FACE_DETECTED` | 422 | STAGE1_GHIBLI | No human face found |
+| `MULTIPLE_FACES` | 422 | STAGE1_GHIBLI | Multiple prominent faces |
+| `NOT_REAL_PHOTO` | 422 | STAGE1_GHIBLI | 3D render / cartoon, not a real photo |
+| `FACE_DETECTOR_FAILURE` | 500 | STAGE1_GHIBLI | MediaPipe runtime error |
+| `STAGE1_API_ERROR` | 500 | STAGE1_GHIBLI | Provider rejected Stage 1 submission |
+| `STAGE1_TIMEOUT` | 504 | STAGE1_GHIBLI | Stage 1 timed out |
+| `IDENTITY_DRIFT_DETECTED` | 500 | STAGE1_GHIBLI | Identity not preserved after retry |
+| `STAGE2_API_ERROR` | 500 | STAGE2_QR | Provider rejected Stage 2 submission |
+| `STAGE2_TIMEOUT` | 504 | STAGE2_QR | Stage 2 timed out |
 | `INTERNAL_ERROR` | 500 | ORCHESTRATION | Unexpected server error |
+
+---
+
+## Installation (local)
+
+### Prerequisites
+- Python 3.10+
+- [uv](https://github.com/astral-sh/uv)
+
+```bash
+git clone <repo-url>
+cd ghibli_qr
+pip install uv
+uv sync
+cp .env.example .env
+# edit .env: set DOMAIN and ARK_API_KEY
+```
+
+Run:
+```bash
+uv run uvicorn src.ghibli_portrait.main:app --host 0.0.0.0 --port 30820 --workers 1
+```
+
+- Swagger UI: `http://localhost:30820/docs`
+- Health: `http://localhost:30820/v1/health`
+
+> No ngrok needed — generation is synchronous. Set `DOMAIN` to this server's
+> reachable address (e.g. `http://localhost:30820` locally, or `http://<ip>:<port>`).
+
+---
+
+## Docker Deployment
+
+### Prerequisites
+- Docker 20.10+, Docker Compose v2
+- `.env` (copy from `.env.example`, set `DOMAIN` + `ARK_API_KEY`)
+- `src/static/lock.png` must exist as a real PNG (Stage 2 lock overlay; read via
+  `config.LOCK_PATH`). It is bind-mounted read-only by `docker-compose.yml`.
+
+```bash
+cp .env.example .env          # edit DOMAIN + ARK_API_KEY
+docker-compose up -d --build
+curl http://localhost:30820/v1/health
+```
+
+| Command | Purpose |
+|---|---|
+| `docker-compose up -d --build` | Build/rebuild and start (use after any code change) |
+| `docker-compose down && docker-compose up -d` | Apply `.env` changes |
+| `docker-compose logs -f ghibli-api` | Live logs |
+
+Host port is configurable: `HOST_PORT=8090 docker-compose up -d`.
+
+---
+
+## Configuration Reference
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DOMAIN` | Yes | — | Base address used to build returned image URLs (no trailing slash) |
+| `ARK_API_KEY` | Yes | — | BytePlus ARK (Seedream) API key |
+| `GHIBLI_MODEL` | No | `seedream-4-5-251128` | Real model for Stage 1 (also reported in response `model`) |
+| `COMPOSE_MODEL` | No | `seedream-4-5-251128` | Real model for Stage 2 (also reported in response `model`) |
+| `ARK_MODEL` | No | `seedream-4-5-251128` | Fallback ARK model id when no per-stage model is given |
+| `ARK_IMAGE_SIZE` | No | `2K` | Output size |
+| `ARK_SEED` | No | `42` | Fixed seed (`-1` = random) |
+| `ARK_WATERMARK` | No | `false` | Add ARK watermark |
+| `REQUIRE_HUMAN_FACE` | No | `true` | Face-detection gate |
+| `MAX_FACES` | No | `1` | Max prominent faces (0 = unlimited) |
+| `MIN_FACE_AREA_RATIO` | No | `0.03` | Minimum face-to-image area ratio |
+| `SHORT_CODE_LENGTH` | No | `8` | URL shortener code length |
+| `ENABLE_IDENTITY_CHECK` | No | `false` | Post-generation identity drift check |
+| `MAX_MEDIAPIPE_CONCURRENCY` | No | `15` | Max concurrent face-detection ops |
+| `GENERATION_CONCURRENCY_LIMIT` | No | `8` | Max concurrent ARK submissions (ARK allows ≤10/model) |
+| `SAVE_OUTPUT_LOCAL` | No | `false` | Also save each final image under `OUTPUT_DIR` |
+| `OUTPUT_DIR` | No | `output` | Local directory for saved final images |
+| `STAGE1_TTL_HOURS` / `QRLOCK_TTL_HOURS` | No | `2` | Intermediate file TTL |
+| `FINAL_IMAGE_TTL_HOURS` | No | `24` | Final image TTL |
+| `PERSIST_FINAL_IMAGES` | No | `false` | Never auto-delete final images |
+| `HOST_PORT` | No | `30820` | Docker host port (compose only) |
 
 ---
 
 ## Tech Stack
 
 - **FastAPI** — async web framework with OpenAPI/Swagger
-- **Pydantic v2** — schema validation with camelCase API surface
+- **httpx** — async HTTP client (downloads, ARK calls)
+- **Pydantic v2** — schema validation (camelCase API surface)
 - **Pillow** — image processing, JPEG optimization, QR placement
-- **MediaPipe** — BlazeFace CPU-only face detection
-- **KIE.ai API** — AI image generation (Flux Kontext / Qwen / Seedream)
-- **Python 3.10+**
+- **MediaPipe** — BlazeFace CPU face detection
+- **qrcode** / **QReader + pyzbar** — QR generation and scannability check
+- **BytePlus ARK (Seedream)** — synchronous AI image generation
+- **uv** — packaging & venv · **Docker** — containerization · **Python 3.10+**
 
 ---
 
@@ -421,44 +274,38 @@ ngrok http 8010
 ```
 src/ghibli_portrait/
 ├── api/
-│   ├── routes.py             # V1 endpoints, pipeline orchestration
+│   ├── routes.py             # V1 endpoints + pipeline orchestration (async)
 │   └── responses.py          # Unified response helpers
-├── models/
-│   └── schemas.py            # Request/response schemas (camelCase)
+├── models/schemas.py         # Request/response schemas (camelCase)
 ├── services/
-│   ├── image_service.py      # KIE API calls (Flux Kontext / Qwen / Seedream)
-│   ├── identity_check.py     # Post-generation identity drift detection
-│   ├── qr_service.py         # QR code generation (proportional sizing)
-│   └── validation_service.py # Multi-layer validation gate
-├── utils/
-│   ├── url_utils.py          # URL shortening
-│   └── image_utils.py        # Image utilities
-├── config.py                 # Settings and prompt configuration
-└── main.py                   # FastAPI app + global error handlers
+│   ├── image_service.py      # generate_img — BytePlus ARK adapter (drop-in)
+│   ├── seedream_service.py   # BytePlus ARK call + ARK settings
+│   ├── identity_check.py     # Optional identity drift detection
+│   ├── qr_service.py         # QR-on-lock generation (PIL)
+│   ├── qr_validation.py      # QR scannability check (QReader/pyzbar)
+│   └── validation_service.py # Face / skin / synthetic validation
+├── utils/url_utils.py        # Deterministic URL shortening
+├── config.py                 # Settings + prompts
+└── main.py                   # FastAPI app, lifespan, thread pool, tmp cleanup
+src/static/lock.png           # Lock-screen template (required asset)
 ```
 
 ---
 
-## Deployment
+## Testing
 
 ```bash
-# Docker
-docker build -t ghibli-api-v1 .
-docker run -p 8010:8010 --env-file .env ghibli-api-v1
+PYTHONPATH= uv run --group test pytest -q
 ```
 
-Deploy to any platform that supports Python (Railway, Render, Fly.io, AWS, GCP, Azure). Ensure `DOMAIN` is publicly reachable for KIE webhook callbacks.
+Covers validation layers, QR generation + decode, skin extraction, synthetic
+detection, the ARK adapter (mocked — no paid calls), and the full `/v1/ghibli-qr`
+flow including local file saving.
 
 ---
 
 ## Documentation
 
-- **Swagger UI**: `http://localhost:8010/docs`
-- **ReDoc**: `http://localhost:8010/redoc`
-- **OpenAPI JSON**: `http://localhost:8010/openapi.json`
-
----
-
-## License
-
-See LICENSE file for details.
+- **Quick Setup (Docker)**: [QUICK_SETUP.md](QUICK_SETUP.md)
+- **Swagger UI**: `http://localhost:30820/docs`
+- **Implementation Guide**: [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)

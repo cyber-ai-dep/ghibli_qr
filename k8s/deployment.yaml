@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ghibli-api
+  labels:
+    app: ghibli-api
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: ghibli-api
+  template:
+    metadata:
+      labels:
+        app: ghibli-api
+    spec:
+      # CLIP preload during startup can legitimately take a while under load;
+      # give it well past the readiness/liveness start-period before killing.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ghibli-api
+          image: ghibli-qr-api:latest
+          ports:
+            - containerPort: 8010
+          envFrom:
+            - configMapRef:
+                name: ghibli-api-config
+            - secretRef:
+                name: ghibli-api-secret
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: OMP_NUM_THREADS
+              value: "1"
+            - name: MKL_NUM_THREADS
+              value: "1"
+          # Same endpoint used for both — startup blocks on CLIP preload, so a
+          # ready pod is by definition also live (matches docs/health endpoint
+          # description: "Use for liveness/readiness probes").
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8010
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8010
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "1"
+              memory: "1536Mi"
+            limits:
+              cpu: "2"
+              memory: "2560Mi"
+          volumeMounts:
+            - name: tmp-storage
+              mountPath: /app/src/static/tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+      volumes:
+        # Backed by a PersistentVolumeClaim (k8s/pvc.yaml), not emptyDir.
+        #
+        # This mount holds the images the API hands out URLs to, and final_* files
+        # are never TTL-deleted (PERSIST_FINAL_IMAGES defaults to true) precisely
+        # because they are the delivered artefact. An emptyDir is destroyed with
+        # the pod, so any rollout or restart would 404 every image URL already
+        # returned to a caller, while the API itself stayed healthy — a silent
+        # data loss, not a visible failure.
+        #
+        # This is also what makes the Kubernetes path behave like the Compose one,
+        # where a named volume already survives `down`/`up` (verified on the test
+        # server: 28 files intact across a full down/up cycle).
+        - name: tmp-storage
+          persistentVolumeClaim:
+            claimName: ghibli-api-tmp

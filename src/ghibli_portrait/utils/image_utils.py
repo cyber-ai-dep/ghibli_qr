@@ -10,7 +10,7 @@ from uuid import uuid4
 import requests
 from PIL import Image
 
-_logger = logging.getLogger("image_utils")
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
