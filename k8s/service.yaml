@@ -1,3 +1,7 @@
+# ClusterIP with no Ingress is what makes this service private — in-cluster
+# callers reach it, nothing outside can. That is the supported way to keep it
+# internal; do not use the app's PRIVATE_MODE/ALLOWED_IPS for this, since they
+# compare the direct TCP peer address and Pod IPs are not stable.
 apiVersion: v1
 kind: Service
 metadata:
@@ -9,6 +13,11 @@ spec:
   selector:
     app: ghibli-api
   ports:
+    # Service port deliberately equals the container port, so the in-cluster
+    # address is http://ghibli-api:8010 — the same address printed in
+    # DEPLOY_HANDOVER.md, scripts/smoke_test.sh, and the handover .env file,
+    # and the one given to the calling team. Publishing on port 80 instead
+    # would make every one of those documented addresses connection-refused.
     - name: http
-      port: 80
+      port: 8010
       targetPort: 8010

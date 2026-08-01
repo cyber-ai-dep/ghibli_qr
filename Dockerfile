@@ -130,9 +130,24 @@ RUN python -c "from qreader import QReader; QReader(model_size='s')"
 # compromised. Created after the CLIP/QReader bake steps (both need root to
 # write into their respective cache paths) and chown'd so the app can still
 # write to static/tmp/ and .cache.
-RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /usr/sbin/nologin appuser \
+#
+# The UID/GID are pinned numerically and USER is set to the NUMBER, not the
+# name, because Kubernetes requires it. When a Pod spec sets
+# `securityContext.runAsNonRoot: true` — which k8s/deployment.yaml does, and
+# which the "restricted" Pod Security Standard mandates cluster-wide — the
+# kubelet must prove the image's user is non-root BEFORE starting it. It reads
+# the User field from the image config and cannot resolve a name against the
+# image's /etc/passwd, so `USER appuser` fails the check outright:
+#   CreateContainerConfigError: container has runAsNonRoot and image has
+#   non-numeric user (appuser), cannot verify user is non-root
+# The Pod then never reaches Running and emits no application log to diagnose
+# from. Docker/Compose resolve the name themselves, so this only ever surfaces
+# on Kubernetes. 10001 must stay in sync with runAsUser/runAsGroup/fsGroup in
+# k8s/deployment.yaml.
+RUN groupadd -r -g 10001 appuser \
+    && useradd -r -u 10001 -g appuser -d /app -s /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app
-USER appuser
+USER 10001
 
 # Expose the API port
 # Default port is 8010 (configurable via docker run -p)

@@ -1,37 +1,114 @@
+# Non-secret application configuration.
+#
+# SOURCE OF TRUTH: this file is generated from the .env.production handed over
+# with the deployment, minus the two secrets (ARK_API_KEY, DIAGNOSTICS_TOKEN,
+# which belong in k8s/secret.yaml) and minus the three Docker-Compose-only keys
+# (BIND_ADDRESS, HOST_PORT, MEM_LIMIT) which the application never reads.
+#
+# Keep the two in sync. config.py calls load_dotenv() with override=False, so a
+# real environment variable always wins over a mounted .env file — meaning a
+# value here silently overrides the handover file rather than conflicting
+# visibly. To regenerate rather than hand-edit:
+#   kubectl create configmap ghibli-api-config \
+#       --from-env-file=<(grep -vE '^(ARK_API_KEY|DIAGNOSTICS_TOKEN|BIND_ADDRESS|HOST_PORT|MEM_LIMIT)=' .env.production) \
+#       --dry-run=client -o yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ghibli-api-config
 data:
   LOG_LEVEL: "INFO"
-  GHIBLI_MODEL: "seedream-4-5-251128"
+
+  # Stage 1 (portrait -> Ghibli) and Stage 2 (compose with QR) deliberately run
+  # DIFFERENT models. This mirrors the test server, where it has been producing
+  # correct output. Stage 1 carries the identity/skin-tone-preservation prompt
+  # and is the part most sensitive to a model change, so switching it to 4.5
+  # requires re-checking output quality — it is not a version bump. config.py
+  # defaults GHIBLI_MODEL to 4.5, so the 4.0 value only survives while it is
+  # explicitly set here.
+  GHIBLI_MODEL: "seedream-4-0-250828"
   COMPOSE_MODEL: "seedream-4-5-251128"
+
   REQUIRE_HUMAN_FACE: "true"
   SHORT_CODE_LENGTH: "8"
+  # Inert: reads as a setting but gates nothing. The post-generation identity
+  # check it used to control was removed from the request path when CLIP
+  # replaced MediaPipe. REQUIRE_HUMAN_FACE above is the active check.
   ENABLE_IDENTITY_CHECK: "false"
+
   CLIP_CONCURRENCY_LIMIT: "4"
   DOWNLOAD_CONCURRENCY_LIMIT: "24"
   GENERATION_CONCURRENCY_LIMIT: "24"
+
   SAVE_OUTPUT_LOCAL: "false"
   STAGE1_TTL_HOURS: "2"
   QRLOCK_TTL_HOURS: "2"
   FINAL_IMAGE_TTL_HOURS: "24"
+  # true = delivered composites are never TTL-deleted, because deleting them
+  # would 404 image URLs already handed to callers. Requires the PVC in
+  # k8s/pvc.yaml — never an emptyDir, which dies with the Pod.
   PERSIST_FINAL_IMAGES: "true"
+
   # Diagnostics API (/v1/diagnostics) — always registered; access is controlled
   # solely by DIAGNOSTICS_TOKEN, which lives in the Secret, not here. Without that
   # token every diagnostics request is rejected with 401.
   DIAG_LOG_BUFFER_SIZE: "2000"
   DIAG_REDACT_URLS: "query"
+
   # Reported in the diagnostics snapshot so prod is distinguishable from staging.
   ENVIRONMENT: "production"
-  # DOMAIN must be the externally reachable address for this Service/Ingress —
-  # set per environment (dev/staging/prod), not baked in here.
-  DOMAIN: "<set-per-environment>"
-  # See main.py's access-control middleware. Default fully open; flip to
-  # "true" + set ALLOWED_IPS per environment to restrict non-/v1/health routes.
+
+  # ---- Public URL derivation -------------------------------------------------
+  # The API returns absolute URLs (resultUrls, stage1Url, qrUrl) pointing at
+  # files it serves itself, so those URLs must be openable by the CALLER.
+  #
+  # With PUBLIC_URL_FROM_REQUEST=true the base address is derived per request
+  # from Host / X-Forwarded-Proto / X-Forwarded-Host. One running instance
+  # therefore answers correctly over an in-cluster ClusterIP address, a raw
+  # NodePort IP, and an HTTPS Ingress at the same time, with no config change.
+  # Moving from http to https requires NOTHING here.
+  PUBLIC_URL_FROM_REQUEST: "true"
+
+  # Optional hardening: comma-separated hostnames (no port) accepted from the
+  # Host header, which is client-controlled. Empty accepts whatever host the
+  # request arrived on — which is what makes ClusterIP + Ingress both work.
+  TRUSTED_HOSTS: ""
+
+  # Tells uvicorn which peers may set X-Forwarded-*. The default is 127.0.0.1,
+  # but an Ingress controller connects from a Pod IP, so with the default
+  # uvicorn DISCARDS X-Forwarded-Proto and scope["scheme"] stays "http" on a
+  # TLS request. Returned asset URLs are unaffected (the app parses the header
+  # itself), but Starlette-generated redirects are not: a 307 from a
+  # trailing-slash route would carry an http:// Location under HTTPS, which a
+  # browser blocks as mixed content. "*" is appropriate when only the Ingress
+  # can reach the Pod; otherwise narrow it to the ingress-controller Pod CIDR.
+  FORWARDED_ALLOW_IPS: "*"
+
+  # DOMAIN — set this to the PUBLIC address of the service (scheme + host, no
+  # trailing slash). It has two distinct roles:
+  #
+  #   1. Fallback base for asset URLs, used only when a request arrives with no
+  #      usable Host header. Normal traffic never hits this path.
+  #   2. The base of the short URL from /v1/qr-url and, more importantly, the
+  #      one /v1/qr-lock ENCODES INTO THE QR IMAGE. That is scanned by a
+  #      phone, so it must be internet-reachable — this use is NOT
+  #      request-derived, by design, and it applies on every call.
+  #
+  # Because of (2), leaving DOMAIN unset means QR codes carry whatever address
+  # the caller used, which for an in-cluster caller is http://ghibli-api:8010
+  # and unscannable. Set it once TLS is live: https://api.example.com
+  # This is the ONLY value to revisit at the TLS cutover; nothing else changes.
+  DOMAIN: "http://api.3lababee.com:30820"
+
+  # App-level IP allow-list. Leave off: it compares the direct TCP peer address,
+  # which becomes the Ingress/proxy address in a cluster, and Pod IPs are not
+  # stable. To make the service private in Kubernetes use a ClusterIP Service
+  # with no Ingress — that is the supported mechanism.
   PRIVATE_MODE: "false"
   ALLOWED_IPS: ""
+
   # Safety net against runaway ARK cost — see main.py's rate-limit middleware.
+  # Counted per process, so it is per-Pod, not cluster-wide.
   RATE_LIMIT_ENABLED: "true"
   RATE_LIMIT_MAX_REQUESTS: "60"
   RATE_LIMIT_WINDOW_SECONDS: "60"

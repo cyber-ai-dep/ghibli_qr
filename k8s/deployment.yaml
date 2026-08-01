@@ -6,11 +6,22 @@ metadata:
     app: ghibli-api
 spec:
   replicas: 1
+  # Recreate, not RollingUpdate. A rolling update would need the new Pod Ready
+  # before the old one terminates, i.e. two Pods alive at once, and that breaks
+  # against both constraints this app has:
+  #   - the PVC is ReadWriteOnce (k8s/pvc.yaml). If the surge Pod is scheduled
+  #     to another node it cannot attach the volume while the incumbent holds
+  #     it, so it never goes Ready, so the old Pod is never released — the
+  #     rollout hangs indefinitely rather than failing.
+  #   - the rate limiter and every concurrency semaphore are per-process (the
+  #     --workers 1 constraint), so two live Pods double the configured
+  #     ceilings: 120 requests/60s instead of 60, 48 concurrent ARK calls
+  #     instead of 24. That defeats the ARK cost safety net during a rollout.
+  # The cost is a real gap during deploys — roughly the 25-60s CLIP preload.
+  # Zero-downtime would require RWX storage plus moving pending_tasks and the
+  # limiters to a shared store.
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0
-      maxSurge: 1
+    type: Recreate
   selector:
     matchLabels:
       app: ghibli-api
@@ -22,6 +33,26 @@ spec:
       # CLIP preload during startup can legitimately take a while under load;
       # give it well past the readiness/liveness start-period before killing.
       terminationGracePeriodSeconds: 30
+      # Pod-level securityContext. All three values must match the numeric
+      # UID/GID pinned in the Dockerfile (`useradd -r -u 10001` / `USER 10001`).
+      #
+      # runAsUser is required, not decorative: the container securityContext
+      # below sets runAsNonRoot: true, and the kubelet refuses to start a
+      # container when it cannot prove the user is non-root. Leaving runAsUser
+      # unset against an image whose USER is a name fails with
+      # CreateContainerConfigError before any application log is written.
+      #
+      # fsGroup is what makes the PVC writable. Most block-storage CSI drivers
+      # present a freshly provisioned volume as root:root 0755, and the mount
+      # covers the Dockerfile's `chown -R appuser:appuser /app`, so without an
+      # fsGroup the non-root process cannot create files in it. That failure is
+      # silent in the worst way: the mount point exists, /v1/health does not
+      # touch the filesystem, so the Pod goes Ready and stays Ready while every
+      # generation request fails writing its image.
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
       containers:
         - name: ghibli-api
           image: ghibli-qr-api:latest
@@ -58,13 +89,24 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 3
+          # Memory limit is 4Gi because a lower ceiling was measured failing, not
+          # estimated: under a 40-request concurrent burst the process peaked at
+          # ~2.08GB, and a 2GB ceiling had the kernel OOM-kill uvicorn mid-burst,
+          # taking the whole container down and dropping in-flight requests. The
+          # ~1GB baseline is the preloaded CLIP model, resident for the process
+          # lifetime; the rest is concurrent decoded images plus CLIP tensors.
+          # Keep this at or above 4Gi, and in sync with MEM_LIMIT in .env.
+          #
+          # CPU: CLIP inference is pinned to one torch thread per call and the
+          # concurrency limit is 4, so 2 cores is a working floor rather than a
+          # tuned figure — raise it together with CLIP_CONCURRENCY_LIMIT.
           resources:
             requests:
               cpu: "1"
-              memory: "1536Mi"
+              memory: "2Gi"
             limits:
               cpu: "2"
-              memory: "2560Mi"
+              memory: "4Gi"
           volumeMounts:
             - name: tmp-storage
               mountPath: /app/src/static/tmp
