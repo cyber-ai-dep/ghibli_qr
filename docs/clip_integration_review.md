@@ -30,6 +30,7 @@
 
 - Single process: `uvicorn --workers 1` (mandatory because `pending_tasks` is in-memory) → **one event loop**.
 - Validation is CPU-bound, run inside `asyncio.to_thread(...)`, bounded by an async semaphore: [`routes.py:99`](../src/ghibli_portrait/api/routes.py#L99) `Semaphore(15)`, passed at both call sites [`routes.py:270`](../src/ghibli_portrait/api/routes.py#L270) and [`routes.py:503`](../src/ghibli_portrait/api/routes.py#L503).
+
 - The lifespan [`main.py:84`](../src/ghibli_portrait/main.py#L84) warms only MediaPipe and expands the thread pool to 100.
 - After the plan: CLIP runs inside the same `to_thread` (it does not block the loop) but is governed by the same inherited `Semaphore(15)` — which is the root of G3.
 
