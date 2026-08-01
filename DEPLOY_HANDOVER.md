@@ -82,12 +82,27 @@ curl -sI -H 'X-Forwarded-Proto: https' https://<host>/v1/qr-url | grep -i locati
 ## 3. Running it
 
 ```bash
-cp .env.example .env
-# edit .env — set DOMAIN, ARK_API_KEY, DIAGNOSTICS_TOKEN, ENVIRONMENT
-
+cp .env.production .env      # the file handed over with this repo, not .env.example
 docker compose build
 docker compose up -d
 ```
+
+`.env.production` already carries every value verified working, including the two
+secrets. Use it as-is — `.env.example` is a documented template for a fresh
+environment, and following `cp .env.example .env` instead would silently drop
+`BIND_ADDRESS` and `FORWARDED_ALLOW_IPS` (binding the service to loopback and
+breaking HTTPS redirects).
+
+Then verify with the smoke test, which checks 15 things including a real
+generation and that the returned image URL opens:
+
+```bash
+BASE_URL=http://<host>:30820 ./scripts/smoke_test.sh
+SKIP_GENERATION=1 BASE_URL=http://<host>:30820 ./scripts/smoke_test.sh   # zero-cost run
+```
+
+Exit code 0 means every check passed. Run it from the host, not inside the
+container — the image has no `curl`.
 
 Startup takes ~25s: the CLIP model is preloaded during startup so the first real
 request does not pay that cost. The container reports `healthy` only after the
@@ -111,8 +126,8 @@ they apply to any manifest, including your own.**
 | Container port | `8010` | `EXPOSE`d by the image. |
 | Health path | `GET /v1/health` | Liveness *and* readiness. Startup blocks on the CLIP preload, so a ready Pod is by definition live. |
 | Startup time | 25–60s | Set `initialDelaySeconds` past this or the Pod is killed while loading. |
-| Runtime UID/GID | `10001` / `10001` | Pinned numerically in the Dockerfile. **Required**: with `runAsNonRoot: true` — which the `restricted` Pod Security Standard mandates — the kubelet cannot verify a *named* user and refuses to start the container with `CreateContainerConfigError`. |
-| `fsGroup` | `10001` | The image writes generated images to `/app/src/static/tmp`. Most CSI drivers present a fresh volume as `root:root 0755`, and the mount covers the Dockerfile's `chown`. Without `fsGroup` the Pod goes **Ready and stays Ready** while every generation fails to write. |
+| Runtime UID/GID | `999` / `999` | Pinned numerically in the Dockerfile. **Required**: with `runAsNonRoot: true` — which the `restricted` Pod Security Standard mandates — the kubelet cannot verify a *named* user and refuses to start the container with `CreateContainerConfigError`. |
+| `fsGroup` | `999` | The image writes generated images to `/app/src/static/tmp`. Most CSI drivers present a fresh volume as `root:root 0755`, and the mount covers the Dockerfile's `chown`. Without `fsGroup` the Pod goes **Ready and stays Ready** while every generation fails to write. |
 | Storage | `ReadWriteOnce` PVC at `/app/src/static/tmp` | Delivered composites are never TTL-deleted (`PERSIST_FINAL_IMAGES=true`), because deleting them 404s URLs already handed out. An `emptyDir` destroys them on every restart — silently. |
 | Replicas | `1`, strategy `Recreate` | `--workers 1` is a hard constraint: `pending_tasks`, the rate limiter, and every concurrency semaphore are per-process. Two Pods double the configured ceilings (120 req/60s instead of 60), and a RollingUpdate against an RWO volume can hang indefinitely on a Multi-Attach error. |
 | Memory | request `2Gi`, limit `4Gi` | Measured, not estimated: a 40-request burst peaked at ~2.08GB, and a 2GB ceiling was OOM-killed mid-burst. ~1GB of that is the resident CLIP model. |
@@ -184,7 +199,7 @@ the likely cause, since these URLs follow the request (§2):
 | `502` / `504` | Ingress read timeout below the 35–60s a generation takes. `k8s/optional/ingress.yaml` sets 120s. |
 | Connection refused at the address in the URL | Service port mismatch — the Service publishes `8010` to match every address in this document. |
 | `http://` URL rejected by a browser on an HTTPS page | `FORWARDED_ALLOW_IPS` not set (§2). |
-| Generation itself succeeds but nothing is ever written | Volume owned by root while the process runs as UID `10001` — set `fsGroup: 10001` (already in `k8s/deployment.yaml`). Health stays green in this state. |
+| `500` with `[Errno 13] Permission denied` from the generation call itself | The mounted volume is owned by another user while the process runs as UID `999`. Docker only applies image ownership to an **empty named volume** — a host bind mount, or a pre-existing volume from an older root-running image, arrives root-owned and unwritable. Costly, because the billed generation runs *before* the save. Fix under Compose: `docker run --rm -v <volume>:/v alpine chown -R 999:999 /v`; under Kubernetes: `fsGroup: 999`. Since this version the container refuses to start in that state and logs the cause, rather than failing per request. |
 
 **Step 4 — validation rejects bad input (free, no generation cost)**
 ```bash

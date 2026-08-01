@@ -50,9 +50,9 @@ spec:
       # touch the filesystem, so the Pod goes Ready and stays Ready while every
       # generation request fails writing its image.
       securityContext:
-        runAsUser: 10001
-        runAsGroup: 10001
-        fsGroup: 10001
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
       containers:
         - name: ghibli-api
           image: ghibli-qr-api:latest
