@@ -58,13 +58,24 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 3
+          # Memory limit is 4Gi because a lower ceiling was measured failing, not
+          # estimated: under a 40-request concurrent burst the process peaked at
+          # ~2.08GB, and a 2GB ceiling had the kernel OOM-kill uvicorn mid-burst,
+          # taking the whole container down and dropping in-flight requests. The
+          # ~1GB baseline is the preloaded CLIP model, resident for the process
+          # lifetime; the rest is concurrent decoded images plus CLIP tensors.
+          # Keep this at or above 4Gi, and in sync with MEM_LIMIT in .env.
+          #
+          # CPU: CLIP inference is pinned to one torch thread per call and the
+          # concurrency limit is 4, so 2 cores is a working floor rather than a
+          # tuned figure — raise it together with CLIP_CONCURRENCY_LIMIT.
           resources:
             requests:
               cpu: "1"
-              memory: "1536Mi"
+              memory: "2Gi"
             limits:
               cpu: "2"
-              memory: "2560Mi"
+              memory: "4Gi"
           volumeMounts:
             - name: tmp-storage
               mountPath: /app/src/static/tmp
