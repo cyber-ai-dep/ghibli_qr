@@ -166,7 +166,8 @@ async def run_request(
 # Runner
 # ---------------------------------------------------------------------------
 
-async def run_concurrent(base_url: str, endpoint: str, timeout: int, count: int = None):
+async def run_concurrent(base_url: str, endpoint: str, timeout: int, count: int = None,
+                         save_path: str = None):
     # Fire one request per test image, all at once. `count` limits to the first N.
     images = list(TEST_IMAGES)
     if count is not None:
@@ -249,6 +250,36 @@ async def run_concurrent(base_url: str, endpoint: str, timeout: int, count: int 
 
     print(f"{'='*60}\n")
 
+    # Full machine-readable results. The live stream above truncates result URLs
+    # to 55 chars for readability, so without this there is no way to recover the
+    # complete URLs (or build before/after reports) from a finished run.
+    if save_path:
+        payload = {
+            "baseUrl": base_url,
+            "endpoint": endpoint,
+            "requests": n,
+            "wallTimeS": round(wall_time, 1),
+            "passed": len(passed),
+            "failed": len(failed),
+            "results": [
+                {
+                    "index": r.index + 1,
+                    "imgUrl": r.img_url,
+                    "success": r.success,
+                    "statusCode": r.status_code,
+                    "durationS": round(r.duration_s, 1),
+                    "arkCostTimeS": r.cost_time,
+                    "resultUrls": r.result_urls,
+                    "errorCode": r.error_code,
+                    "errorMsg": r.error_msg,
+                }
+                for r in sorted(results, key=lambda r: r.index)
+            ],
+        }
+        with open(save_path, "w") as f:
+            json.dump(payload, f, indent=2)
+        print(f"  Full results saved to {save_path}\n")
+
     return len(failed)
 
 
@@ -281,6 +312,11 @@ def main():
         default=None,
         help="Limit to the first N test images (default: all)",
     )
+    parser.add_argument(
+        "--save",
+        default=None,
+        help="Write full untruncated results (JSON) to this path",
+    )
     args = parser.parse_args()
 
     failures = asyncio.run(
@@ -289,6 +325,7 @@ def main():
             endpoint=args.endpoint,
             timeout=args.timeout,
             count=args.count,
+            save_path=args.save,
         )
     )
     sys.exit(failures)
