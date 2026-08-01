@@ -6,6 +6,8 @@
 # a POSIX shell, so it runs unchanged on a bare VPS, inside the container, or from
 # a debug pod in Kubernetes.
 #
+# Runnable from any directory — it reads nothing relative to itself.
+#
 # Usage:
 #   ./smoke_test.sh                                   # defaults to http://127.0.0.1:30820
 #   BASE_URL=http://ghibli-api:8010 ./smoke_test.sh   # from another container / pod
@@ -13,6 +15,11 @@
 #
 #   DIAGNOSTICS_TOKEN=<token> ./smoke_test.sh         # also exercises /v1/diagnostics
 #   SKIP_GENERATION=1 ./smoke_test.sh                 # skip the one billed test (§4)
+#   WAIT_SECONDS=90 ./smoke_test.sh                   # allow longer for a cold start
+#
+# If DIAGNOSTICS_TOKEN is not exported, the script looks for a .env in a few
+# usual locations (ENV_FILE=... to point at one explicitly). That is only a
+# convenience for running on the deployment host; it never fails if absent.
 #
 # Exit status is 0 only if every test passed, so this is safe to gate a rollout on.
 #
@@ -25,6 +32,20 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:30820}"
 BASE_URL="${BASE_URL%/}"
 DIAGNOSTICS_TOKEN="${DIAGNOSTICS_TOKEN:-}"
 SKIP_GENERATION="${SKIP_GENERATION:-0}"
+# Startup preloads the CLIP model, so a container is reachable but not yet
+# answering for ~25s after `up`. Waiting here is what makes the script safe to
+# run immediately after a deploy instead of failing on a cold start.
+WAIT_SECONDS="${WAIT_SECONDS:-60}"
+
+# Best-effort token discovery, so the caller does not have to be in the project
+# directory. Explicit ENV_FILE wins; otherwise try the usual deploy paths.
+if [ -z "$DIAGNOSTICS_TOKEN" ]; then
+  for _f in "${ENV_FILE:-}" ./.env /root/ghibli_qr/.env /opt/ghibli_qr/.env /app/.env; do
+    [ -n "$_f" ] && [ -r "$_f" ] || continue
+    _t=$(sed -n 's/^DIAGNOSTICS_TOKEN=//p' "$_f" | head -1 | tr -d '\r"'"'"' ')
+    if [ -n "$_t" ]; then DIAGNOSTICS_TOKEN="$_t"; DIAG_TOKEN_SRC="$_f"; break; fi
+  done
+fi
 
 # A real single-person portrait (passes validation) and a bear (rejected).
 HUMAN_IMG="${HUMAN_IMG:-https://images.pexels.com/photos/17651327/pexels-photo-17651327.jpeg}"
@@ -53,14 +74,26 @@ printf "Target: %s\n" "$BASE_URL"
 # ---------------------------------------------------------------------------
 head_ "1. Health"
 # ---------------------------------------------------------------------------
-BODY=$(curl -s --max-time 15 "$BASE_URL/v1/health" 2>/dev/null)
-CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$BASE_URL/v1/health" 2>/dev/null)
+WAITED=0
+while :; do
+  BODY=$(curl -s --max-time 10 "$BASE_URL/v1/health" 2>/dev/null)
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$BASE_URL/v1/health" 2>/dev/null)
+  { [ "$CODE" = "200" ] && has "$BODY" '"status":"healthy"'; } && break
+  [ "$WAITED" -ge "$WAIT_SECONDS" ] && break
+  [ "$WAITED" -eq 0 ] && printf "  ...waiting for startup (CLIP preload), up to %ss\n" "$WAIT_SECONDS"
+  sleep 3
+  WAITED=$((WAITED+3))
+done
+
 if [ "$CODE" = "200" ] && has "$BODY" '"status":"healthy"'; then
-  ok "GET /v1/health -> 200 healthy"
+  [ "$WAITED" -gt 0 ] && ok "GET /v1/health -> 200 healthy (ready after ${WAITED}s)" \
+                      || ok "GET /v1/health -> 200 healthy"
 else
   bad "GET /v1/health -> $CODE" "$BODY"
-  printf "\n${R}Service is not reachable — stopping here.${N}\n"
-  printf "Check: container running, correct BASE_URL, port published/reachable from here.\n"
+  printf "\n${R}Service is not reachable after %ss — stopping here.${N}\n" "$WAIT_SECONDS"
+  printf "Check: container running (docker ps), BASE_URL correct for where you are\n"
+  printf "running this, and the port reachable from here. Note 127.0.0.1 is NOT\n"
+  printf "shared with other containers — from a container use http://ghibli-api:8010.\n"
   exit 1
 fi
 
@@ -151,9 +184,10 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$BASE_URL/v1/diagno
   || bad "unauthenticated /v1/diagnostics -> $CODE (expected 401)"
 
 if [ -z "$DIAGNOSTICS_TOKEN" ]; then
-  skip "DIAGNOSTICS_TOKEN not set — authenticated checks not run"
-  skip "  (export DIAGNOSTICS_TOKEN=... to verify models loaded + retention config)"
+  skip "DIAGNOSTICS_TOKEN not found — authenticated checks not run"
+  skip "  (export DIAGNOSTICS_TOKEN=... or ENV_FILE=/path/to/.env)"
 else
+  [ -n "${DIAG_TOKEN_SRC:-}" ] && printf "        token read from %s\n" "$DIAG_TOKEN_SRC"
   BODY=$(curl -s --max-time 30 -H "X-Diagnostics-Token: $DIAGNOSTICS_TOKEN" \
           "$BASE_URL/v1/diagnostics?logLimit=0" 2>/dev/null)
   if has "$BODY" '"success":true'; then
