@@ -133,21 +133,33 @@ RUN python -c "from qreader import QReader; QReader(model_size='s')"
 #
 # The UID/GID are pinned numerically and USER is set to the NUMBER, not the
 # name, because Kubernetes requires it. When a Pod spec sets
-# `securityContext.runAsNonRoot: true` — which k8s/deployment.yaml does, and
-# which the "restricted" Pod Security Standard mandates cluster-wide — the
-# kubelet must prove the image's user is non-root BEFORE starting it. It reads
-# the User field from the image config and cannot resolve a name against the
-# image's /etc/passwd, so `USER appuser` fails the check outright:
+# `securityContext.runAsNonRoot: true` — which the "restricted" Pod Security
+# Standard mandates cluster-wide — the kubelet must prove the image's user is
+# non-root BEFORE starting it. It reads the User field from the image config and
+# cannot resolve a name against the image's /etc/passwd, so `USER appuser` fails
+# the check outright:
 #   CreateContainerConfigError: container has runAsNonRoot and image has
 #   non-numeric user (appuser), cannot verify user is non-root
 # The Pod then never reaches Running and emits no application log to diagnose
 # from. Docker/Compose resolve the name themselves, so this only ever surfaces
-# on Kubernetes. 10001 must stay in sync with runAsUser/runAsGroup/fsGroup in
-# k8s/deployment.yaml.
-RUN groupadd -r -g 10001 appuser \
-    && useradd -r -u 10001 -g appuser -d /app -s /usr/sbin/nologin appuser \
+# on Kubernetes.
+#
+# The number is 999 specifically, NOT an arbitrary pick. Before it was pinned,
+# `useradd -r` auto-assigned the highest free system UID, which on this base
+# image is 999 — that is the UID that owns every file in the existing
+# `ghibli_qr_ghibli_tmp` volume on the deployed server. Since the mount covers
+# the chown below, and the volume directory is mode 0755, choosing any other
+# number would leave the process unable to write into its own image directory:
+# every generation would fail on an upgrade, while /v1/health kept reporting
+# healthy. Pinning to 999 makes the value explicit and reproducible without
+# breaking a single existing deployment.
+#
+# If a deployment somehow has a volume owned by a different UID, fix it with:
+#   docker run --rm -v ghibli_qr_ghibli_tmp:/v alpine chown -R 999:999 /v
+RUN groupadd -r -g 999 appuser \
+    && useradd -r -u 999 -g appuser -d /app -s /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app
-USER 10001
+USER 999
 
 # Expose the API port
 # Default port is 8010 (configurable via docker run -p)
