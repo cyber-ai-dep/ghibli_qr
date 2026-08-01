@@ -24,31 +24,58 @@ value is an environment variable.
 
 ---
 
-## 2. `DOMAIN` — the one value that breaks things if wrong
+## 2. `DOMAIN` and how returned URLs are built
 
-This service **returns image URLs that point back at itself**:
+This service **returns image URLs that point back at itself** — `resultUrls`,
+`stage1Url`, `qrUrl` are all served by this same process (a StaticFiles mount at
+`/tmp`), so they have to be addresses the caller can actually open.
 
-```
-POST /v1/ghibli-qr  →  { "resultUrls": ["<DOMAIN>/tmp/final_xxx.jpg"] }
-```
+**Those URLs are derived per request, not from `DOMAIN`.** With
+`PUBLIC_URL_FROM_REQUEST=true` (the default) the base address comes from the
+request's `Host` / `X-Forwarded-Proto` / `X-Forwarded-Host` headers. One running
+instance therefore serves all of these correctly at the same time, with no
+configuration change:
 
-Those files are served by this same process (a StaticFiles mount at `/tmp`).
-So `DOMAIN` must be an address **the calling client can actually open**.
-
-If `DOMAIN` is wrong, the API still returns `200 OK` with a `resultUrls` array —
-but every URL in it is unreachable for the caller. The failure is silent from the
-API's point of view, which is why it is worth verifying explicitly (§4, step 3).
-
-Pick the value that matches the deployment shape:
-
-| Deployment shape | `DOMAIN` value |
+| How the caller reaches it | What it gets back |
 |---|---|
-| Public/reverse-proxied behind a domain | `https://api.yourdomain.com` |
-| Direct on a server, callers reach it by IP:port | `http://<server-ip>:30820` |
-| Kubernetes, caller is another pod in the cluster | `http://<service-name>.<namespace>.svc.cluster.local:8010` |
+| `http://<ip>:30820` | `http://<ip>:30820/tmp/final_xxx.jpg` |
+| in-cluster `http://ghibli-api:8010` | `http://ghibli-api:8010/tmp/final_xxx.jpg` |
+| HTTPS Ingress `https://api.example.com` | `https://api.example.com/tmp/final_xxx.jpg` |
 
-No trailing slash. Use `https://` whenever the caller reaches it over TLS —
-the scheme is copied verbatim into every returned URL.
+Moving from IP to domain, or from HTTP to HTTPS, needs **no change here**.
+
+### Where `DOMAIN` still matters
+
+Two places, and the second is the one that makes it a required value:
+
+1. **Fallback** for the URLs above, used only when a request arrives with no
+   usable `Host` header. Normal traffic never reaches this path.
+2. **The base of the short URL** from `/v1/qr-url`, and — the important one —
+   the URL that `/v1/qr-lock` **encodes into the QR image** when
+   `shorten_url=true`. That gets scanned by a phone, so it must be reachable
+   from the public internet. This is deliberately *not* request-derived: an
+   in-cluster caller would otherwise get `http://ghibli-api:8010/abc12345`
+   baked into the QR, which no phone can open.
+
+So set `DOMAIN` to the address **end users** should reach (no trailing slash,
+scheme included), not the address the calling service happens to use.
+
+### At the TLS cutover
+
+`DOMAIN` is the only value to revisit. Change it from `http://host:port` to
+`https://host`. Image URLs switch to `https` on their own because they follow
+the request; the QR payload does not, which is why this one needs editing.
+
+Also confirm `FORWARDED_ALLOW_IPS=*` is set (it is, in the handover env file and
+`k8s/configmap.yaml`). It is read by uvicorn, whose default only trusts
+`127.0.0.1`, so without it uvicorn discards `X-Forwarded-Proto` from a proxy and
+emits redirects with an `http://` `Location` — which browsers block as mixed
+content. Verify after cutover:
+
+```bash
+curl -sI -H 'X-Forwarded-Proto: https' https://<host>/v1/qr-url | grep -i location
+# must print https://, not http://
+```
 
 ---
 
@@ -70,6 +97,40 @@ Optional, to make the running build identifiable in diagnostics:
 
 ```bash
 docker compose build --build-arg GIT_COMMIT=$(git rev-parse --short=12 HEAD)
+```
+
+### Running it on Kubernetes
+
+The manifests in `k8s/` are a working reference, not a requirement — if you
+deploy with your own charts and conventions, use them and take only the facts in
+the table below. **These are properties of the image and the application, so
+they apply to any manifest, including your own.**
+
+| Fact | Value | Why it matters |
+|---|---|---|
+| Container port | `8010` | `EXPOSE`d by the image. |
+| Health path | `GET /v1/health` | Liveness *and* readiness. Startup blocks on the CLIP preload, so a ready Pod is by definition live. |
+| Startup time | 25–60s | Set `initialDelaySeconds` past this or the Pod is killed while loading. |
+| Runtime UID/GID | `10001` / `10001` | Pinned numerically in the Dockerfile. **Required**: with `runAsNonRoot: true` — which the `restricted` Pod Security Standard mandates — the kubelet cannot verify a *named* user and refuses to start the container with `CreateContainerConfigError`. |
+| `fsGroup` | `10001` | The image writes generated images to `/app/src/static/tmp`. Most CSI drivers present a fresh volume as `root:root 0755`, and the mount covers the Dockerfile's `chown`. Without `fsGroup` the Pod goes **Ready and stays Ready** while every generation fails to write. |
+| Storage | `ReadWriteOnce` PVC at `/app/src/static/tmp` | Delivered composites are never TTL-deleted (`PERSIST_FINAL_IMAGES=true`), because deleting them 404s URLs already handed out. An `emptyDir` destroys them on every restart — silently. |
+| Replicas | `1`, strategy `Recreate` | `--workers 1` is a hard constraint: `pending_tasks`, the rate limiter, and every concurrency semaphore are per-process. Two Pods double the configured ceilings (120 req/60s instead of 60), and a RollingUpdate against an RWO volume can hang indefinitely on a Multi-Attach error. |
+| Memory | request `2Gi`, limit `4Gi` | Measured, not estimated: a 40-request burst peaked at ~2.08GB, and a 2GB ceiling was OOM-killed mid-burst. ~1GB of that is the resident CLIP model. |
+| CPU | request `1`, limit `2` | A floor, not a tuned figure. Raise together with `CLIP_CONCURRENCY_LIMIT`. |
+| Private access | `ClusterIP`, no Ingress | The supported way. Do **not** use the app's `PRIVATE_MODE`/`ALLOWED_IPS` — they compare the direct TCP peer, which becomes the proxy in a cluster, and Pod IPs are not stable. |
+
+Config comes from a ConfigMap + Secret via `envFrom`. Three keys in the handover
+`.env` are read by `docker-compose.yml` and **not** by the application, so they
+do nothing here: `BIND_ADDRESS`, `HOST_PORT`, `MEM_LIMIT`. Every other key works
+identically in both environments.
+
+Note that `config.py` calls `load_dotenv()` with `override=False`, so a real
+environment variable always wins over a mounted `.env` file. If you supply both,
+the ConfigMap silently takes precedence rather than conflicting visibly — pick
+one.
+
+```bash
+kubectl apply -f k8s/          # ingress.yaml is under k8s/optional/ and is skipped
 ```
 
 ---
@@ -94,7 +155,7 @@ Check in the response:
 - `config.arkApiKeyConfigured` = `true`
 - `config.domain` = the value you set (verify it is not a leftover)
 
-**Step 3 — full generation, and the returned URL actually opens** ← catches a wrong `DOMAIN`
+**Step 3 — full generation, and the returned URL actually opens** ← catches broken image delivery
 ```bash
 curl -s -X POST <BASE>/v1/ghibli-qr \
   -H "Content-Type: application/json" \
@@ -109,8 +170,21 @@ will really be calling this API**:
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" "<resultUrls[0]>"
 ```
-Expect `200`. Anything else means `DOMAIN` is wrong for this caller — fix `.env`
-and `docker compose up -d` (no rebuild needed).
+Expect `200`. This step matters because a generation can succeed and still hand
+back a URL nobody can open — the API returns `200 OK` either way, so the failure
+is invisible from the API's side.
+
+If it is not `200`, work through these in order — note that `DOMAIN` is *not*
+the likely cause, since these URLs follow the request (§2):
+
+| Symptom | Likely cause |
+|---|---|
+| `404` on the image, API healthy | Storage not mounted where the app writes. Under Kubernetes the PVC (`k8s/pvc.yaml`) must be mounted at `/app/src/static/tmp`; an `emptyDir` loses every delivered image on restart. |
+| `404` only for some paths | Ingress path rule not forwarding `/tmp/` to this Service. |
+| `502` / `504` | Ingress read timeout below the 35–60s a generation takes. `k8s/optional/ingress.yaml` sets 120s. |
+| Connection refused at the address in the URL | Service port mismatch — the Service publishes `8010` to match every address in this document. |
+| `http://` URL rejected by a browser on an HTTPS page | `FORWARDED_ALLOW_IPS` not set (§2). |
+| Generation itself succeeds but nothing is ever written | Volume owned by root while the process runs as UID `10001` — set `fsGroup: 10001` (already in `k8s/deployment.yaml`). Health stays green in this state. |
 
 **Step 4 — validation rejects bad input (free, no generation cost)**
 ```bash

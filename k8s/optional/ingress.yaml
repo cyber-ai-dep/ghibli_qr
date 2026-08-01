@@ -1,0 +1,58 @@
+# OPTIONAL — apply this only if the service must be reachable from OUTSIDE the
+# cluster. It lives in k8s/optional/ so that `kubectl apply -f k8s/` does not
+# pick it up: the placeholder host below is not a valid RFC1123 name and would
+# fail the whole apply.
+#
+# The service is handed over as internal-only, and for in-cluster callers the
+# ClusterIP Service (k8s/service.yaml) is sufficient on its own — they reach it
+# at http://ghibli-api:8010 with no Ingress involved.
+#
+# Adding an Ingress requires NO application configuration change. Returned image
+# URLs are derived per request from Host / X-Forwarded-Proto / X-Forwarded-Host,
+# so the same running Pod answers in-cluster callers with
+# http://ghibli-api:8010/tmp/... and external HTTPS callers with
+# https://<your-host>/tmp/... simultaneously. DOMAIN is only the fallback for
+# requests arriving with no usable Host header; it is not baked into responses.
+#
+# One thing that DOES need setting for TLS: FORWARDED_ALLOW_IPS in
+# k8s/configmap.yaml (already "*"). Without it uvicorn ignores X-Forwarded-Proto
+# from the ingress controller's Pod IP, and Starlette's trailing-slash redirects
+# emit an http:// Location that browsers block as mixed content.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ghibli-api
+  annotations:
+    # Generation requests can legitimately take tens of seconds (two
+    # sequential ARK calls) — raise the proxy read timeout accordingly.
+    # Ingress-controller-specific; adjust the annotation key if not using
+    # ingress-nginx.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    # Callers POST image URLs, not image bodies, so requests are small — but
+    # raise this if a client is ever changed to upload files directly.
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  rules:
+    # Replace with the real external hostname. It does NOT have to match
+    # DOMAIN in k8s/configmap.yaml — returned URLs follow this Host header
+    # automatically.
+    - host: "<set-per-environment>"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ghibli-api
+                port:
+                  # Matches k8s/service.yaml, which publishes 8010 rather than
+                  # 80 so the in-cluster address matches every document.
+                  number: 8010
+  # Uncomment and point at a real cert-manager/TLS secret once the host above
+  # is set. Enabling TLS needs no change on the application side.
+  # tls:
+  #   - hosts:
+  #       - "<set-per-environment>"
+  #     secretName: ghibli-api-tls
