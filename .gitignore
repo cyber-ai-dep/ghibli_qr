@@ -33,3 +33,8 @@ output/
 
 # CLIP manual validation run outputs
 tests/manual/clip_validation_results_*.csv
+# Manual test artifacts — timestamped outputs of tests/manual/ runs (CSV results,
+# raw logs, saved JSON). Regenerated on every run; never part of the source.
+tests/manual/*_results_*.csv
+tests/manual/*_log_*.txt
+tests/manual/*.json
