@@ -19,11 +19,22 @@ services:
     security_opt:
       - no-new-privileges:true
 
-    # Host port is configurable via HOST_PORT env var (default 30820).
-    # Internal container port stays 8010 (matches uvicorn in Dockerfile CMD).
-    # Example: HOST_PORT=8090 docker-compose up -d
+    # Published as <BIND_ADDRESS>:<HOST_PORT> -> container 8010 (the port uvicorn
+    # listens on, fixed in the Dockerfile CMD).
+    #
+    # BIND_ADDRESS controls WHO can reach the service and is the main deployment
+    # decision here:
+    #   127.0.0.1 (default) — reachable only from this host. Nothing outside the
+    #                         server can connect, no firewall rule required.
+    #   0.0.0.0             — reachable from anywhere that can route to this host.
+    #
+    # Note that 127.0.0.1 is the HOST's loopback: other containers do NOT share
+    # it. A container that needs to call this service must join the network below
+    # and use the service name (http://ghibli-api:8010) — which is also exactly
+    # how a caller addresses it under Kubernetes, so the two environments behave
+    # the same way.
     ports:
-      - "${HOST_PORT:-30820}:8010"
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-30820}:8010"
 
     # Load environment variables from .env file
     env_file:
@@ -82,5 +93,20 @@ services:
         max-size: "10m"
         max-file: "3"
 
+    networks:
+      - ghibli-net
+
+# Named so other compose projects can join it (external: true on their side) and
+# reach this service as http://ghibli-api:8010 — no published host port involved,
+# which is the same addressing model as a Kubernetes ClusterIP Service.
+networks:
+  ghibli-net:
+    name: ghibli-net
+
 volumes:
+  # Named volume, NOT a bind mount or an anonymous volume: it is owned by Docker
+  # and survives `docker compose down`, `up`, `restart`, and image rebuilds. It is
+  # removed only by an explicit `docker compose down -v` / `docker volume rm`.
+  # This is what keeps generated images (final_*, stage1_*, qrlock_*) across
+  # restarts — see PERSIST_FINAL_IMAGES, which stops final_* being TTL-deleted.
   ghibli_tmp:

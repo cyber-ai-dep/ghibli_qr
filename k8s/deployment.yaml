@@ -72,10 +72,18 @@ spec:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
       volumes:
-        # Generated files (QR locks, stage1, final outputs) are ephemeral with
-        # a built-in TTL cleanup loop (see main.py) — no PersistentVolumeClaim
-        # is needed. Each pod's tmp dir is local to that pod; requests never
-        # depend on state from a different pod (the app is stateless across
-        # pods — pending_tasks is in-process only, never crosses pod boundaries).
+        # Backed by a PersistentVolumeClaim (k8s/pvc.yaml), not emptyDir.
+        #
+        # This mount holds the images the API hands out URLs to, and final_* files
+        # are never TTL-deleted (PERSIST_FINAL_IMAGES defaults to true) precisely
+        # because they are the delivered artefact. An emptyDir is destroyed with
+        # the pod, so any rollout or restart would 404 every image URL already
+        # returned to a caller, while the API itself stayed healthy — a silent
+        # data loss, not a visible failure.
+        #
+        # This is also what makes the Kubernetes path behave like the Compose one,
+        # where a named volume already survives `down`/`up` (verified on the test
+        # server: 28 files intact across a full down/up cycle).
         - name: tmp-storage
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: ghibli-api-tmp

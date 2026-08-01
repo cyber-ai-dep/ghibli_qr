@@ -1,0 +1,36 @@
+# Durable storage for generated images.
+#
+# Needed because PERSIST_FINAL_IMAGES defaults to true: final_* files are the
+# composite returned to the caller and are deliberately never TTL-deleted, so the
+# directory holding them has to outlive the pod. An emptyDir does not — it is
+# created empty with the pod and destroyed with it, so every rollout, node drain,
+# eviction or crash-loop restart would silently take every previously delivered
+# image URL with it (the API would keep answering 200 while /tmp/<file> started
+# returning 404 for links already handed to callers).
+#
+# accessModes is ReadWriteOnce, which matches the deployment's replicas: 1 and the
+# --workers 1 constraint. If this is ever scaled past one replica, this must
+# become ReadWriteMany on a shared filesystem (NFS/CephFS/EFS) or, preferably,
+# delivery should move to object storage — with RWO and multiple replicas, a pod
+# can serve a URL for a file written by a different pod and 404 on it.
+#
+# Sizing: intermediates (stage1_/qrlock_) self-expire on their TTLs, so growth is
+# driven by final_* alone at roughly 0.6 MB each. 20Gi therefore covers on the
+# order of 30k delivered images. Raise it, or move to object storage, before that
+# becomes the binding constraint — the volume has no eviction policy of its own.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ghibli-api-tmp
+  labels:
+    app: ghibli-api
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName is intentionally omitted so the cluster's default class is
+  # used. Set it explicitly if this cluster has no default, or to pin a specific
+  # class (e.g. one backed by SSD).
+  # storageClassName: standard
