@@ -36,6 +36,7 @@ from src.ghibli_portrait.api.responses import (
     external_error_response,
     internal_error_response,
 )
+from src.ghibli_portrait.api.public_url import asset_url
 from src.ghibli_portrait.config import Settings
 from src.ghibli_portrait.diagnostics.runtime import TrackedSemaphore
 from src.ghibli_portrait.models.schemas import (
@@ -181,7 +182,7 @@ async def _rehost_stage2(remote_url: str):
         path.parent.mkdir(parents=True, exist_ok=True)
         img.save(path, format="JPEG", quality=95, optimize=True)
         _save_local_copy(img, filename, quality=95)
-        return img, s.DOMAIN + "/tmp/" + filename
+        return img, asset_url(filename)
 
     img, local_url = await asyncio.to_thread(_save)
     return img, local_url
@@ -441,7 +442,7 @@ async def get_qr_lock(req: QRLockRequest):
             return filename
 
         filename = await asyncio.to_thread(_gen_qr)
-        url_path = s.DOMAIN + "/tmp/" + filename
+        url_path = asset_url(filename)
 
         response_data = {"qrUrl": url_path, "encodedUrl": req.url}
         if short_url_data:
@@ -643,7 +644,7 @@ async def automated_pipeline(request: GhibliQRRequest):
             img.save(s.TMP_PATH / filename, format="JPEG", quality=92, optimize=True)
             # Return the measured size alongside the URL — the log line below used to
             # report a hardcoded literal that did not track the actual thumbnail.
-            return s.DOMAIN + "/tmp/" + filename, max(img.size)
+            return asset_url(filename), max(img.size)
 
         qr_lock_url_path, _qr_lock_px = await asyncio.to_thread(_gen_qr_lock)
         _log.info("QR lock generated in %.2fs — saved as qrlock_*.jpg size=%dpx", _time.monotonic() - _t_qr, _qr_lock_px)
@@ -718,7 +719,7 @@ async def automated_pipeline(request: GhibliQRRequest):
                 filename = f"stage1_{uuid4()}.jpg"
                 img.save(s.TMP_PATH / filename, format="JPEG", quality=92, optimize=True)
                 _save_local_copy(img, filename)
-                return img, s.DOMAIN + "/tmp/" + filename
+                return img, asset_url(filename)
 
             ghibli_img, ghibli_local_url = await asyncio.to_thread(_save_stage1)
         except Exception as e:

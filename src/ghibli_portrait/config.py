@@ -59,8 +59,25 @@ class Settings:
     GHIBLI_MODEL = os.getenv("GHIBLI_MODEL", "seedream-4-5-251128")    # Stage 1 (portrait → Ghibli)
     COMPOSE_MODEL = os.getenv("COMPOSE_MODEL", "seedream-4-5-251128")  # Stage 2 (Ghibli + QR composition)
 
-    # Server Settings — public/base address used to build the returned image URLs.
+    # Server Settings — fallback base address for the URLs this API returns
+    # (resultUrls / stage1Url / qrUrl). By default those URLs are built from the
+    # incoming request instead, so one deployment answers correctly whether it is
+    # reached by domain over HTTPS or by raw IP:port — see api/public_url.py.
+    # DOMAIN is used when a request carries no usable Host, and outside any
+    # request. Set it to the address most callers use. No trailing slash.
     DOMAIN = os.getenv("DOMAIN")
+
+    # Derive returned asset URLs from each request's Host/X-Forwarded-* headers.
+    # Set to false to pin every returned URL to DOMAIN regardless of how the
+    # request arrived.
+    PUBLIC_URL_FROM_REQUEST = os.getenv("PUBLIC_URL_FROM_REQUEST", "true").lower() in {"1", "true", "yes"}
+
+    # Optional allow-list of hostnames (no port, comma-separated) accepted from
+    # the Host / X-Forwarded-Host header. Host is client-controlled, so this
+    # bounds which hostnames can appear in returned links. Empty means accept the
+    # host the request arrived on — which is what lets domain and IP both work
+    # with no configuration.
+    TRUSTED_HOSTS = {h.strip() for h in os.getenv("TRUSTED_HOSTS", "").split(",") if h.strip()}
 
     # Validation Settings
     # If enabled, requests without a detectable face are rejected before generation.

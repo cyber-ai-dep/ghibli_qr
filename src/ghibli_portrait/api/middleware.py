@@ -11,6 +11,11 @@ from __future__ import annotations
 import logging
 import time
 
+from src.ghibli_portrait.api.public_url import (
+    resolve_from_headers,
+    reset_public_base_url,
+    set_public_base_url,
+)
 from src.ghibli_portrait.diagnostics.context import (
     NO_REQUEST_ID,
     new_request_id,
@@ -73,6 +78,22 @@ class RequestContextMiddleware:
         request_id = sanitize_request_id(inbound) or new_request_id()
         token = set_request_id(request_id)
 
+        # Bind the base URL the returned asset links are built from, derived from
+        # this request's own headers so the same deployment answers correctly on a
+        # domain and on a bare IP. Settings is read here rather than captured at
+        # import so the flag stays togglable without rebuilding the middleware.
+        from src.ghibli_portrait.config import Settings as _S
+
+        url_token = None
+        if _S.PUBLIC_URL_FROM_REQUEST:
+            url_token = set_public_base_url(
+                resolve_from_headers(
+                    scope.get("headers", []),
+                    fallback=(_S.DOMAIN or ""),
+                    trusted_hosts=_S.TRUSTED_HOSTS,
+                )
+            )
+
         method = scope.get("method", "-")
         path = scope.get("path", "-")
         started = time.monotonic()
@@ -110,6 +131,8 @@ class RequestContextMiddleware:
             method, path, status, elapsed_ms,
         )
         reset_request_id(token)
+        if url_token is not None:
+            reset_public_base_url(url_token)
 
 
 __all__ = ["RequestContextMiddleware", "NO_REQUEST_ID"]
