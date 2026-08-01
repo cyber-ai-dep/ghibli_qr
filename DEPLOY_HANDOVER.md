@@ -82,12 +82,27 @@ curl -sI -H 'X-Forwarded-Proto: https' https://<host>/v1/qr-url | grep -i locati
 ## 3. Running it
 
 ```bash
-cp .env.example .env
-# edit .env — set DOMAIN, ARK_API_KEY, DIAGNOSTICS_TOKEN, ENVIRONMENT
-
+cp .env.production .env      # the file handed over with this repo, not .env.example
 docker compose build
 docker compose up -d
 ```
+
+`.env.production` already carries every value verified working, including the two
+secrets. Use it as-is — `.env.example` is a documented template for a fresh
+environment, and following `cp .env.example .env` instead would silently drop
+`BIND_ADDRESS` and `FORWARDED_ALLOW_IPS` (binding the service to loopback and
+breaking HTTPS redirects).
+
+Then verify with the smoke test, which checks 15 things including a real
+generation and that the returned image URL opens:
+
+```bash
+BASE_URL=http://<host>:30820 ./scripts/smoke_test.sh
+SKIP_GENERATION=1 BASE_URL=http://<host>:30820 ./scripts/smoke_test.sh   # zero-cost run
+```
+
+Exit code 0 means every check passed. Run it from the host, not inside the
+container — the image has no `curl`.
 
 Startup takes ~25s: the CLIP model is preloaded during startup so the first real
 request does not pay that cost. The container reports `healthy` only after the
@@ -184,7 +199,7 @@ the likely cause, since these URLs follow the request (§2):
 | `502` / `504` | Ingress read timeout below the 35–60s a generation takes. `k8s/optional/ingress.yaml` sets 120s. |
 | Connection refused at the address in the URL | Service port mismatch — the Service publishes `8010` to match every address in this document. |
 | `http://` URL rejected by a browser on an HTTPS page | `FORWARDED_ALLOW_IPS` not set (§2). |
-| Generation itself succeeds but nothing is ever written | Volume owned by root while the process runs as UID `999` — set `fsGroup: 999` (already in `k8s/deployment.yaml`). Health stays green in this state. |
+| `500` with `[Errno 13] Permission denied` from the generation call itself | The mounted volume is owned by another user while the process runs as UID `999`. Docker only applies image ownership to an **empty named volume** — a host bind mount, or a pre-existing volume from an older root-running image, arrives root-owned and unwritable. Costly, because the billed generation runs *before* the save. Fix under Compose: `docker run --rm -v <volume>:/v alpine chown -R 999:999 /v`; under Kubernetes: `fsGroup: 999`. Since this version the container refuses to start in that state and logs the cause, rather than failing per request. |
 
 **Step 4 — validation rejects bad input (free, no generation cost)**
 ```bash

@@ -133,6 +133,35 @@ async def lifespan(app: FastAPI):
     # Ensure tmp directory exists (missing on fresh clone → StaticFiles mount fails at startup).
     s.TMP_PATH.mkdir(parents=True, exist_ok=True)
 
+    # Then prove it is WRITABLE, and crash if it is not.
+    #
+    # mkdir(exist_ok=True) above succeeds on a directory this process cannot
+    # write to, which is exactly what a volume mounted with the wrong ownership
+    # looks like: Docker only applies image ownership to an EMPTY named volume,
+    # so a host bind mount or a pre-existing root-owned volume arrives as
+    # root:root 0755 while the process runs as a non-root user. Kubernetes has
+    # the same shape when a PVC is mounted with no fsGroup.
+    #
+    # Without this check that failure is both silent and expensive. Nothing else
+    # notices it — /v1/health returns static JSON, the Docker HEALTHCHECK only
+    # calls /v1/health, and diagnostics only reads the directory — so the
+    # container reports healthy while every generation request runs the billed
+    # ARK call FIRST and only then fails saving the result, returning a 500. A
+    # retrying caller can burn a full rate-limit window of paid generations that
+    # way. Crashing at startup instead turns it into an obvious restart loop
+    # with the cause in the log, before a single request is charged.
+    _probe = s.TMP_PATH / ".write_probe"
+    try:
+        _probe.touch()
+        _probe.unlink()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Image directory {s.TMP_PATH} is not writable by uid={os.getuid()}: {exc}. "
+            "The volume mounted there is owned by another user. Under Docker fix it with: "
+            f"docker run --rm -v <volume>:/v alpine chown -R {os.getuid()}:{os.getgid()} /v — "
+            "under Kubernetes set fsGroup in the pod securityContext."
+        ) from exc
+
     # Preload CLIP (model + text embeddings) so the first request doesn't pay
     # the ~2.3s load cost. Exceptions are intentionally not caught here — a
     # load failure should crash startup so restart: on-failure retries,
